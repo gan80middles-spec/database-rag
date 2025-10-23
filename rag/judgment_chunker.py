@@ -30,6 +30,7 @@ def normalize_text(t: str) -> str:
 
 # ---------- 轻量元数据 ----------
 RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
+RE_CASE_NO_STRICT = re.compile(r"[（(]\d{4}[）)][^号\n]{0,40}号")
 RE_COURT   = re.compile(r"[\u4e00-\u9fa5]{2,30}人民法院")
 RE_DATE_CHINESE = re.compile(r"([〇零○ＯO一二三四五六七八九十百千两]{3,})年([〇零○ＯO一二三四五六七八九十两]{1,3})月([〇零○ＯO一二三四五六七八九十两]{1,3})日")
 RE_STATUTE = re.compile(r"《[^》]{1,30}》第?[一二三四五六七八九十百千0-9]+条")
@@ -98,7 +99,7 @@ def detect_doc_type(text: str, file_path: str = "") -> str:
                     consider(combo)
     return best
 
-def detect_trial_level(text: str) -> str:
+def detect_trial_level(text: str, case_no: str = "") -> str:
     """
     返回统一规范的审级/程序标签（trial_level）：
       - 赔偿委员会申诉｜赔偿委员会决定
@@ -109,44 +110,45 @@ def detect_trial_level(text: str) -> str:
     """
     head = text[:8000]
 
-    patterns = [
-        # —— 国家赔偿（司法赔偿线：赔偿委员会）——
-        # 监督程序/申诉到上一级赔偿委员会
-        (r"(委赔监|赔偿监督程序|赔偿监督审查)",                   "赔偿委员会申诉"),
-        (r"赔偿委员会.{0,30}(申诉|监督程序|监督审查|申诉审查)",     "赔偿委员会申诉"),
-        (r"(驳回|支持).{0,6}申诉",                                  "赔偿委员会申诉"),
+    src_case = case_no
+    if not src_case:
+        m_case = RE_CASE_NO_STRICT.search(head)
+        if m_case:
+            src_case = m_case.group(0)
 
-        # 同级赔偿委员会作出的决定
-        (r"赔偿委员会.{0,10}(决定书|决定)",                         "赔偿委员会决定"),
-        (r"（\d{4}）[^，\n]*委赔[^号]*号",                           "赔偿委员会决定"),
+    if src_case:
+        if re.search(r"(民终|行终|刑终|知民终|知行终|知刑终|破终|赔终)", src_case):
+            return "二审"
+        if re.search(r"(民初|行初|刑初|知民初|知行初|知刑初|破初|赔初)", src_case):
+            return "一审"
 
-        # —— 国家赔偿（行政赔偿线）——
-        (r"(复议决定书|复议决定).{0,8}(国家赔偿|赔偿)",               "复议决定"),
-        (r"(赔偿决定书|赔偿决定).{0,20}(行政机关|赔偿义务机关|国家赔偿)", "赔偿决定"),
+    if re.search(r"本(判决|裁定)为终审(判决|裁定)", head):
+        return "二审"
 
-        # —— 特殊程序 ——
-        (r"死刑复核",                                               "死刑复核"),
+    if re.search(r"(委赔监|赔偿监督程序|赔偿监督审查|赔偿委员会.{0,10}(申诉|监督))", head):
+        return "赔偿委员会申诉"
+    if re.search(r"赔偿委员会.{0,10}(决定书|决定)", head) or re.search(r"（\d{4}）[^，\n]*委赔[^号]*号", head):
+        return "赔偿委员会决定"
+    if re.search(r"(复议决定书|复议决定).{0,8}(国家赔偿|赔偿)", head):
+        return "复议决定"
+    if re.search(r"(赔偿决定书|赔偿决定).{0,20}(行政机关|赔偿义务机关|国家赔偿)", head):
+        return "赔偿决定"
 
-        # —— 再审链路 ——
-        (r"再审(申请)?审查",                                        "再审审查"),
-        (r"(再审|重审).{0,6}(判决|裁定|决定)",                       "再审"),
+    if re.search(r"再审(申请)?审查", head):
+        return "再审审查"
+    if re.search(r"(再审|重审).{0,6}(判决|裁定|决定)", head):
+        return "再审"
 
-        # —— 二审/一审：显式用语优先 ——
-        (r"二审(判决|裁定|决定)?",                                  "二审"),
-        (r"一审(判决|裁定|决定)?",                                  "一审"),
+    if re.search(r"死刑复核", head):
+        return "死刑复核"
 
-        # —— 二审/一审：从案号代码判断（行终/民终/刑终 ~ 二审；行初/民初/刑初 ~ 一审）——
-        (r"(行终|民终|刑终)",                                       "二审"),
-        (r"(行初|民初|刑初)",                                       "一审"),
+    if re.search(r"二审(判决|裁定|决定)?", head):
+        return "二审"
+    if re.search(r"一审(判决|裁定|决定)?", head):
+        return "一审"
 
-        # —— 执行程序（不是审级，单列为程序标签）——
-        (r"执行(裁定|决定|异议|复议|和解|分配|拍卖|变卖|终结|终止|恢复|追加|变更|限制|罚款|拘留)", "执行程序"),
-        (r"\b执行\b",                                               "执行程序"),
-    ]
-
-    for pat, label in patterns:
-        if re.search(pat, head):
-            return label
+    if re.search(r"执行(裁定|决定|异议|复议|分配|拍卖|变卖|终结|终止|恢复|追加|变更|限制|罚款|拘留)", head):
+        return "执行程序"
     return ""
 
 
@@ -275,7 +277,7 @@ def extract_light_meta(text: str, file_path: str = ""):
     m_case_no = RE_CASE_NO.search(head)
     court = _detect_court(text)
     doc_type  = detect_doc_type(text, file_path)
-    trial     = detect_trial_level(text)
+    trial     = detect_trial_level(text, m_case_no.group(0) if m_case_no else "")
     statutes  = list(dict.fromkeys([x.group(0) for x in RE_STATUTE.finditer(text)]))[:50]
     return {
         "case_number": m_case_no.group(0) if m_case_no else "",
@@ -288,65 +290,42 @@ def extract_light_meta(text: str, file_path: str = ""):
 
 # ---------- 分段（锚点+兜底） ----------
 SECTION_PATTERNS = [
-    # 标题：行内只要以“××判决书/裁定书/决定书/调解书/赔偿××决定书”结尾即可
-    ("标题", r"^\s*[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-\.]{2,80}"
-            r"(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书|赔偿复议决定书)\s*$"),
-
-    # 案号行：必须“整行就是案号”，避免正文末尾引用案号被误判
-    ("案号行", r"^\s*[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9〔〕字第\-—\s]*\d+号\s*$"),
-
-    # 诉讼/申请/赔偿请求
-    ("诉讼请求", r"^\s*(?:[（(]?\s*[一二三四五六七八九十0-9]+[)）]、?)?"
-               r"\s*(诉讼请求|上诉请求|抗诉请求|申请事项|请求事项|赔偿请求)\s*[：:，]?\s*$"),
-
-    # 答辩/抗辩
-    ("答辩/抗辩", r"^\s*(答辩(意见|情况)?|被告答辩|被上诉人答辩|抗辩意见|辩称)\s*[：:，]?\s*$"),
-
-    # 审理/程序经过
-    ("审理经过", r"^\s*(审理经过|案件受理情况|庭审情况|程序经过|案件基本情况|本院经审理|本院经审查)\s*[：:，]?\s*$"),
-
-    # 查明事实
-    ("查明", r"^\s*((?:经)?审理查明|经审查查明|本院查明|查明事实|案件基本事实)\s*[：:，]?\s*$"),
-
-    # 法院认为/意见
-    ("理由", r"^\s*(本院(?:经审理|经审查)?认为|法院认为|合议庭认为|本院意见)\s*[：:，]?\s*$"),
-
-    # 依据（“依照/根据……之规定”一整行常见）
-    ("依据", r"^\s*(依照|根据)[^。；\n]{0,40}(之规定)?\s*$"),
-
-    # 主文（各种常见写法）
-    ("主文", r"^\s*(裁判主文|判决如下|裁定如下|决定如下|综上(?:所述)?[,，]?(?:判决|裁定|决定)如下)\s*$"),
-
-    # 费用（若作为独立行）
-    ("费用", r"^\s*(案件受理费|诉讼费用|执行费用|申请费).{0,6}\s*[：:，]?\s*$"),
-
-    # 国家赔偿文书的专段
-    ("赔偿专段", r"^\s*(赔偿决定|赔偿范围|赔偿项目|赔偿数额|赔偿计算)\s*[：:，]?\s*$"),
+    ("标题", r"[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-.]{2,30}(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)\s*$"),
+    ("案号行", r"^\s*[（(]\d{4}[）)][^号\n]{0,40}号\s*$"),
+    ("当事人信息", r"^(上诉人|被上诉人|原告|被告|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)"),
+    ("审理经过", r"^(本院于.*立案后|依法组成合议庭|开庭进行了审理|审理经过|案件受理)"),
+    ("诉讼请求", r"^(诉讼请求|上诉请求|抗诉请求)"),
+    ("答辩/抗辩", r"^(答辩情况|抗辩意见|辩称|被上诉人答辩)"),
+    ("查明", r"^(经审理查明|本院查明|查明事实|案件基本事实)"),
+    ("争议焦点", r"^(本案(?:二审|一审)?争议焦点)"),
+    ("理由", r"^(本院(?:经审理|经审查)?认为|法院认为|合议庭认为|本院意见)"),
+    ("依据", r"^(依照|根据)[^。\n]{0,80}"),
+    ("主文", r"^(裁判主文|判决如下|裁定如下|决定如下)"),
+    ("尾部", r"^(审判长|审判员|人民陪审员|书记员|本判决为终审判决|本裁定为终审裁定)"),
 ]
 SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS]
 
 
 def _match_section_name(raw: str):
-    if not raw:
+    s = raw.strip()
+    if not s:
         return None
-    stripped = raw.strip().rstrip("：:，。； ")
-    if not stripped:
-        return None
-    collapsed = re.sub(r"\s+", "", stripped)
     for name, pat in SEC_COMPILED:
-        if pat.search(stripped) or pat.search(collapsed):
+        if pat.match(s):
             return name
-    if collapsed.endswith("经审理查明"):
-        return "查明"
-    if collapsed.endswith(("经审理认为", "合议庭认为")):
-        return "理由"
     return None
 
 def split_sections(text: str):
     lines = text.splitlines()
     markers = []
+    seen_case_no = False
     for i, raw in enumerate(lines):
         name = _match_section_name(raw)
+        if name == "案号行":
+            if seen_case_no or i > 20:
+                name = None
+            else:
+                seen_case_no = True
         if name:
             markers.append((i, name))
     if len(markers) < 2 or {name for _, name in markers} == {"案号行"}:
