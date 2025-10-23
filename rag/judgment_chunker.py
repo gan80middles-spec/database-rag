@@ -32,62 +32,212 @@ def normalize_text(t: str) -> str:
 RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
 RE_COURT   = re.compile(r"[^\n]{0,30}人民法院")
 RE_DATE    = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
-RE_DOCTYPE = re.compile(r"(刑事|民事|行政|执行|国家赔偿).*?(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿判决书)")
-RE_TRIAL   = re.compile(r"(一审|二审|再审|重审|再审审查|执行|赔偿委员会)")
+RE_TRIAL   = re.compile(r"(一审|二审|再审|重审|再审审查|执行|赔偿委员会|赔偿监督审查)")
 RE_STATUTE = re.compile(r"《[^》]{1,30}》第?[一二三四五六七八九十百千0-9]+条")
 
-def extract_light_meta(text: str):
-    m_case_no = RE_CASE_NO.search(text)
-    m_court   = RE_COURT.search(text)
-    m_date    = None
-    for m in reversed(list(RE_DATE.finditer(text))):
-        m_date = m; break
-    m_doctype = RE_DOCTYPE.search(text)
-    m_trial   = RE_TRIAL.search(text)
+DOC_TYPE_TAILS = [
+    "司法赔偿监督审查决定书",
+    "赔偿监督审查决定书",
+    "赔偿复议决定书",
+    "赔偿判决书",
+    "赔偿决定书",
+    "赔偿调解书",
+    "通知书",
+    "调解书",
+    "判决书",
+    "裁定书",
+    "决定书",
+]
+RE_DOC_TYPE_LINE = re.compile(
+    r"(刑事|民事|行政|执行|国家赔偿|赔偿|司法赔偿)?"
+    r"(司法赔偿监督审查决定书|赔偿监督审查决定书|赔偿复议决定书|赔偿判决书|赔偿决定书|赔偿调解书|判决书|裁定书|决定书|调解书|通知书)$"
+)
+
+def _clean_spaces(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+def detect_doc_type(text: str, file_path: str = "") -> str:
+    head = text[:3000]
+    best = ""
+
+    def consider(candidate: str):
+        nonlocal best
+        if not candidate:
+            return
+        if not best or len(candidate) > len(best):
+            best = candidate
+
+    for raw in head.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        collapsed = _clean_spaces(stripped)
+        m = RE_DOC_TYPE_LINE.search(collapsed)
+        if m:
+            prefix = m.group(1) or ""
+            tail = m.group(2)
+            if prefix and tail.startswith(prefix):
+                consider(tail)
+            else:
+                consider(prefix + tail)
+            continue
+
+        for tail in DOC_TYPE_TAILS:
+            if collapsed.endswith(tail):
+                consider(tail)
+
+    if file_path:
+        base = os.path.splitext(os.path.basename(file_path))[0]
+        collapsed = _clean_spaces(base)
+        for tail in DOC_TYPE_TAILS:
+            if tail in collapsed:
+                consider(tail)
+        for prefix in ["刑事", "民事", "行政", "执行", "国家赔偿", "赔偿", "司法赔偿"]:
+            for tail in DOC_TYPE_TAILS:
+                combo = prefix + tail
+                if combo in collapsed and prefix not in tail:
+                    consider(combo)
+    return best
+
+def detect_trial_level(text: str) -> str:
+    head = text[:4000]
+    priority = [
+        "赔偿监督审查",
+        "赔偿委员会",
+        "再审审查",
+        "再审",
+        "重审",
+        "二审",
+        "一审",
+        "执行",
+    ]
+    for key in priority:
+        if key in head:
+            return key
+    return ""
+
+def detect_judgment_date(text: str) -> str:
+    matches = list(RE_DATE.finditer(text))
+    if not matches:
+        return ""
+    best = None
+    best_score = None
+    length = len(text)
+    for m in matches:
+        year, month, day = m.group(1), int(m.group(2)), int(m.group(3))
+        ctx = text[max(0, m.start()-20):min(length, m.end()+20)]
+        has_keyword = bool(re.search(r"判决|裁定|决定|调解|赔偿|结案|审理终结", ctx))
+        dist = length - m.start()
+        score = (0 if has_keyword else 1000) + dist
+        if best is None or score < best_score:
+            best = (year, month, day)
+            best_score = score
+    if best:
+        return f"{best[0]}-{best[1]:02d}-{best[2]:02d}"
+    last = matches[-1]
+    return f"{last.group(1)}-{int(last.group(2)):02d}-{int(last.group(3)):02d}"
+
+def extract_light_meta(text: str, file_path: str = ""):
+    head = text[:4000]
+    m_case_no = RE_CASE_NO.search(head)
+    m_court   = RE_COURT.search(head)
+    doc_type  = detect_doc_type(text, file_path)
+    trial     = detect_trial_level(text)
     statutes  = list(dict.fromkeys([x.group(0) for x in RE_STATUTE.finditer(text)]))[:50]
     return {
         "case_number": m_case_no.group(0) if m_case_no else "",
         "court": (m_court.group(0) if m_court else "").strip(),
-        "judgment_date": f"{m_date.group(1)}-{int(m_date.group(2)):02d}-{int(m_date.group(3)):02d}" if m_date else "",
-        "doc_type": (m_doctype.group(0) if m_doctype else "").strip(),
-        "trial_level": m_trial.group(1) if m_trial else "",
+        "judgment_date": detect_judgment_date(text),
+        "doc_type": doc_type,
+        "trial_level": trial,
         "statutes": statutes
     }
 
 # ---------- 分段（锚点+兜底） ----------
 SECTION_PATTERNS = [
-    ("标题", r"^\s*[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-\.\s]{3,60}(判决书|裁定书|决定书|调解书|赔偿决定书)\s*$"),
-    ("案号行", r"^\s*[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号\s*$"),
-    ("诉讼请求", r"^\s*(诉讼请求|上诉请求|抗诉请求)\s*[:：]?\s*$"),
-    ("答辩/抗辩", r"^\s*(答辩情况|抗辩意见|辩称|被告答辩|被上诉人答辩)\s*[:：]?\s*$"),
-    ("审理经过", r"^\s*(审理经过|案件受理|庭审情况|程序经过)\s*[:：]?\s*$"),
-    ("查明", r"^\s*(经审理查明|本院查明|查明事实|案件基本事实)\s*[:：]?\s*$"),
-    ("理由", r"^\s*(本院认为|法院认为|合议庭认为|二审法院认为)\s*[:：]?\s*$"),
-    ("依据", r"^\s*(依照|根据)\s*[:：]?\s*$"),
-    ("主文", r"^\s*(裁判主文|判决如下|裁定如下|决定如下)\s*[:：]?\s*$"),
-    ("费用", r"^\s*(案件受理费|诉讼费用|手续费|执行费用)\s*[:：]?\s*$"),
-    ("赔偿专段", r"^\s*(赔偿决定|赔偿范围|赔偿项目|赔偿数额)\s*[:：]?\s*$"),
+    ("标题", r"[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-\.]{2,30}(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)$"),
+    ("案号行", r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号$"),
+    ("诉讼请求", r"(诉讼请求|上诉请求|抗诉请求)$"),
+    ("答辩/抗辩", r"(答辩情况|抗辩意见|辩称|被告答辩|被上诉人答辩)$"),
+    ("审理经过", r"(审理经过|案件受理|庭审情况|程序经过)$"),
+    ("查明", r"(经审理查明|本院查明|查明事实|案件基本事实)$"),
+    ("理由", r"(本院认为|法院认为|合议庭认为|二审法院认为)$"),
+    ("依据", r"(依照|根据)$"),
+    ("主文", r"(裁判主文|判决如下|裁定如下|决定如下)$"),
+    ("费用", r"(案件受理费|诉讼费用|手续费|执行费用)$"),
+    ("赔偿专段", r"(赔偿决定|赔偿范围|赔偿项目|赔偿数额)$"),
 ]
-SEC_COMPILED = [(name, re.compile(pat, flags=re.M)) for name, pat in SECTION_PATTERNS]
+SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS]
+
+def _match_section_name(raw: str):
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    collapsed = _clean_spaces(stripped)
+    for name, pat in SEC_COMPILED:
+        if pat.search(stripped) or pat.search(collapsed):
+            return name
+    if collapsed.endswith("经审理查明"):
+        return "查明"
+    if collapsed.endswith("经审理认为") or collapsed.endswith("合议庭认为"):
+        return "理由"
+    return None
 
 def split_sections(text: str):
     lines = text.splitlines()
     markers = []
     for i, raw in enumerate(lines):
-        s = raw.strip()
-        for name, pat in SEC_COMPILED:
-            if pat.match(s):
-                markers.append((i, name)); break
+        name = _match_section_name(raw)
+        if name:
+            markers.append((i, name))
     if len(markers) < 2:
         parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-        return [{"name":"段落","text":p} for p in parts]
+        if len(parts) <= 1:
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            if not lines:
+                return []
+            header, body = [], []
+            for idx, line in enumerate(lines):
+                header.append(line)
+                collapsed = _clean_spaces(line)
+                if any(token in collapsed for token in ["判决书","裁定书","决定书","调解书","赔偿决定书","赔偿监督审查决定书"]):
+                    body = lines[idx+1:]
+                    break
+                if idx >= 2:
+                    body = lines[idx+1:]
+                    break
+            else:
+                body = []
+            sections = []
+            if header:
+                sections.append({"name": "标题", "text": "\n".join(header).strip()})
+            if body:
+                sections.append({"name": "正文", "text": "\n".join(body).strip()})
+            return sections if sections else [{"name": "正文", "text": text.strip()}]
+        sections = []
+        first = parts[0]
+        if any(token in _clean_spaces(first) for token in ["判决书","裁定书","决定书","调解书","赔偿决定书","赔偿监督审查决定书"]):
+            sections.append({"name": "标题", "text": first})
+            for idx, p in enumerate(parts[1:], start=1):
+                sections.append({"name": f"段落{idx}", "text": p})
+        else:
+            for idx, p in enumerate(parts, start=1):
+                sections.append({"name": f"段落{idx}", "text": p})
+        return sections
     sections = []
     for idx, (ln, name) in enumerate(markers):
-        start = ln
+        if idx == 0 and ln > 0:
+            head_text = "\n".join(lines[:ln]).strip()
+            if head_text:
+                sections.append({"name": "开头", "text": head_text})
         end = markers[idx+1][0] if idx+1 < len(markers) else len(lines)
-        seg = "\n".join(lines[start:end]).strip()
+        seg = "\n".join(lines[ln:end]).strip()
         if seg:
             sections.append({"name": name, "text": seg})
+        if idx == len(markers) - 1 and end < len(lines):
+            tail = "\n".join(lines[end:]).strip()
+            if tail:
+                sections.append({"name": "结尾", "text": tail})
     return sections
 
 def gentle_split_long_block(s: str, hard_limit=1600, target=900):
@@ -241,7 +391,7 @@ def process_one_file(root_dir, out_dir, path, min_chars, max_chars, overlap):
         return {"file": path, "ok": False, "reason": "empty_or_unreadable"}
 
     text = normalize_text(raw)
-    meta = extract_light_meta(text)
+    meta = extract_light_meta(text, path)
     system, subtype = infer_case_system_and_subtype(root_dir, path)
 
     if not system:
