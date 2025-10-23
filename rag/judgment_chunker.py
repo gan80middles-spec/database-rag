@@ -31,7 +31,6 @@ def normalize_text(t: str) -> str:
 # ---------- 轻量元数据 ----------
 RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
 RE_COURT   = re.compile(r"[\u4e00-\u9fa5]{2,30}人民法院")
-RE_DATE_ARABIC = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
 RE_DATE_CHINESE = re.compile(r"([〇零○ＯO一二三四五六七八九十百千两]{3,})年([〇零○ＯO一二三四五六七八九十两]{1,3})月([〇零○ＯO一二三四五六七八九十两]{1,3})日")
 RE_STATUTE = re.compile(r"《[^》]{1,30}》第?[一二三四五六七八九十百千0-9]+条")
 
@@ -199,33 +198,55 @@ def _parse_chinese_number(num: str) -> int:
     return total
 
 
+def _clean_court_candidate(candidate: str) -> str:
+    if not candidate:
+        return ""
+    candidate = candidate.strip()
+    candidate = re.sub(r"^[，。、；：\s]+", "", candidate)
+
+    bad_prefixes = [
+        "不服于", "因不服", "不服",
+        "原告向", "被告向", "上诉人向", "被上诉人向", "申请人向", "请求人向", "检察院向",
+        "原告", "被告", "上诉人", "被上诉人", "申请人", "请求人", "检察院",
+        "经", "由", "对", "因", "就", "针对", "依照", "根据",
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for prefix in bad_prefixes:
+            if candidate.startswith(prefix) and len(candidate) - len(prefix) >= 4:
+                candidate = candidate[len(prefix):].lstrip("，。、；： \t")
+                changed = True
+                break
+
+    best = ""
+    for m in RE_COURT.finditer(candidate):
+        piece = m.group(0).strip()
+        if len(piece) > len(best):
+            best = piece
+    return best
+
+
 def _detect_court(text: str) -> str:
     head = text[:4000]
     best = ""
+    best_len = 0
     for raw in head.splitlines():
         if "人民法院" not in raw:
             continue
         candidates = RE_COURT.findall(raw)
         if not candidates:
             continue
-        # 取最长匹配，通常是全称
-        candidate = max(candidates, key=len)
-        candidate = candidate.strip()
-        if len(candidate) > len(best):
-            best = candidate
+        for cand in candidates:
+            cleaned = _clean_court_candidate(cand)
+            if cleaned and len(cleaned) > best_len:
+                best = cleaned
+                best_len = len(cleaned)
     return best
 
 def detect_judgment_date(text: str) -> str:
     matches = []
     length = len(text)
-
-    for m in RE_DATE_ARABIC.finditer(text):
-        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        ctx = text[max(0, m.start()-20):min(length, m.end()+20)]
-        has_keyword = bool(re.search(r"判决|裁定|决定|调解|赔偿|结案|审理终结", ctx))
-        dist = length - m.start()
-        score = (0 if has_keyword else 1000) + dist
-        matches.append((score, year, month, day))
 
     for m in RE_DATE_CHINESE.finditer(text):
         year_raw, month_raw, day_raw = m.group(1), m.group(2), m.group(3)
@@ -233,6 +254,8 @@ def detect_judgment_date(text: str) -> str:
         month = _parse_chinese_number(month_raw)
         day = _parse_chinese_number(day_raw)
         if year < 0 or month <= 0 or day <= 0:
+            continue
+        if month > 12 or day > 31:
             continue
         ctx = text[max(0, m.start()-20):min(length, m.end()+20)]
         has_keyword = bool(re.search(r"判决|裁定|决定|调解|赔偿|结案|审理终结", ctx))
@@ -265,31 +288,57 @@ def extract_light_meta(text: str, file_path: str = ""):
 
 # ---------- 分段（锚点+兜底） ----------
 SECTION_PATTERNS = [
-    ("标题", r"[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-\.]{2,30}(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)$"),
-    ("案号行", r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号$"),
-    ("诉讼请求", r"(诉讼请求|上诉请求|抗诉请求)$"),
-    ("答辩/抗辩", r"(答辩情况|抗辩意见|辩称|被告答辩|被上诉人答辩)$"),
-    ("审理经过", r"(审理经过|案件受理|庭审情况|程序经过)$"),
-    ("查明", r"(经审理查明|本院查明|查明事实|案件基本事实)$"),
-    ("理由", r"(本院认为|法院认为|合议庭认为|二审法院认为)$"),
-    ("依据", r"(依照|根据)$"),
-    ("主文", r"(裁判主文|判决如下|裁定如下|决定如下)$"),
-    ("费用", r"(案件受理费|诉讼费用|手续费|执行费用)$"),
-    ("赔偿专段", r"(赔偿决定|赔偿范围|赔偿项目|赔偿数额)$"),
+    # 标题：行内只要以“××判决书/裁定书/决定书/调解书/赔偿××决定书”结尾即可
+    ("标题", r"^\s*[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-\.]{2,80}"
+            r"(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书|赔偿复议决定书)\s*$"),
+
+    # 案号行：必须“整行就是案号”，避免正文末尾引用案号被误判
+    ("案号行", r"^\s*[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9〔〕字第\-—\s]*\d+号\s*$"),
+
+    # 诉讼/申请/赔偿请求
+    ("诉讼请求", r"^\s*(?:[（(]?\s*[一二三四五六七八九十0-9]+[)）]、?)?"
+               r"\s*(诉讼请求|上诉请求|抗诉请求|申请事项|请求事项|赔偿请求)\s*[：:，]?\s*$"),
+
+    # 答辩/抗辩
+    ("答辩/抗辩", r"^\s*(答辩(意见|情况)?|被告答辩|被上诉人答辩|抗辩意见|辩称)\s*[：:，]?\s*$"),
+
+    # 审理/程序经过
+    ("审理经过", r"^\s*(审理经过|案件受理情况|庭审情况|程序经过|案件基本情况|本院经审理|本院经审查)\s*[：:，]?\s*$"),
+
+    # 查明事实
+    ("查明", r"^\s*((?:经)?审理查明|经审查查明|本院查明|查明事实|案件基本事实)\s*[：:，]?\s*$"),
+
+    # 法院认为/意见
+    ("理由", r"^\s*(本院(?:经审理|经审查)?认为|法院认为|合议庭认为|本院意见)\s*[：:，]?\s*$"),
+
+    # 依据（“依照/根据……之规定”一整行常见）
+    ("依据", r"^\s*(依照|根据)[^。；\n]{0,40}(之规定)?\s*$"),
+
+    # 主文（各种常见写法）
+    ("主文", r"^\s*(裁判主文|判决如下|裁定如下|决定如下|综上(?:所述)?[,，]?(?:判决|裁定|决定)如下)\s*$"),
+
+    # 费用（若作为独立行）
+    ("费用", r"^\s*(案件受理费|诉讼费用|执行费用|申请费).{0,6}\s*[：:，]?\s*$"),
+
+    # 国家赔偿文书的专段
+    ("赔偿专段", r"^\s*(赔偿决定|赔偿范围|赔偿项目|赔偿数额|赔偿计算)\s*[：:，]?\s*$"),
 ]
 SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS]
 
+
 def _match_section_name(raw: str):
-    stripped = raw.strip()
+    if not raw:
+        return None
+    stripped = raw.strip().rstrip("：:，。； ")
     if not stripped:
         return None
-    collapsed = _clean_spaces(stripped)
+    collapsed = re.sub(r"\s+", "", stripped)
     for name, pat in SEC_COMPILED:
         if pat.search(stripped) or pat.search(collapsed):
             return name
     if collapsed.endswith("经审理查明"):
         return "查明"
-    if collapsed.endswith("经审理认为") or collapsed.endswith("合议庭认为"):
+    if collapsed.endswith(("经审理认为", "合议庭认为")):
         return "理由"
     return None
 
@@ -514,6 +563,7 @@ def process_one_file(root_dir, out_dir, path, min_chars, max_chars, overlap):
 
     if system == "执行":
         subtype = infer_exec_subtype_from_filename(os.path.basename(path))
+        meta["trial_level"] = "执行程序"
 
     sections = split_sections(text)
     chunks = aggregate_chunks(sections, min_chars, max_chars, overlap)
