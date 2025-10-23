@@ -101,27 +101,67 @@ def detect_doc_type(text: str, file_path: str = "") -> str:
 
 def detect_trial_level(text: str, case_no: str = "") -> str:
     """
-    返回统一规范的审级/程序标签（trial_level）：
-      - 赔偿委员会申诉｜赔偿委员会决定
-      - 复议决定｜赔偿决定（行政赔偿线）
-      - 再审审查｜再审｜二审｜一审｜死刑复核
-      - 执行程序
-    匹配顺序按“越具体优先”。
+    trial_level 统一标签优先由案号判定，其次才看正文提示语。
+    优先级（从高到低）：
+      死刑复核 > 赔偿委员会申诉/决定 > 再审/再审审查 > 二审 > 一审 > 执行程序
+    参考：最高法《关于人民法院案件案号的若干规定》及“案件类型代字标准”
     """
+
     head = text[:8000]
 
-    src_case = case_no
+    # 1) 取案号（优先使用入参，其次从正文抬头处抓取）
+    src_case = case_no or ""
     if not src_case:
-        m_case = RE_CASE_NO_STRICT.search(head)
-        if m_case:
-            src_case = m_case.group(0)
+        # 兼容你文件里已有的全局正则；没有就用兜底
+        rx_list = []
+        try:
+            rx_list.append(RE_CASE_NO_STRICT)  # 若你的文件里有该正则
+        except NameError:
+            pass
+        try:
+            rx_list.append(RE_CASE_NO)         # 你现有的正则
+        except NameError:
+            pass
+        if not rx_list:
+            rx_list.append(re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{1,20}\d+号"))
+        for rx in rx_list:
+            m = rx.search(head)
+            if m:
+                src_case = m.group(0)
+                break
 
+    # 2) 先用案号里的类型代字判定（越具体越先返回）
     if src_case:
+        # （a）死刑复核：最高法常用“刑复……号”
+        if re.search(r"刑复", src_case):
+            return "死刑复核"
+
+        # （b）国家赔偿委员会：监督/申诉 与 决定
+        if "委赔监" in src_case:
+            return "赔偿委员会申诉"
+        # 注意：避免把“委赔监”也当成“委赔决定”
+        if "委赔" in src_case and "委赔监" not in src_case:
+            return "赔偿委员会决定"
+
+        # （c）再审链路：先“再审审查”，后“再审”
+        # 申诉/申请再审审查：民申/行申/刑申/知民申/赔申/破申/…；依职权监督：民监/行监/刑监/赔监/破监/…
+        if re.search(r"(民申|行申|刑申|知民申|赔申|破申|民监|行监|刑监|知民监|赔监|破监)", src_case):
+            return "再审审查"
+        # 已立案再审审理：民再/行再/刑再/知民再/赔再/破再…
+        if re.search(r"(民再|行再|刑再|知民再|赔再|破再)", src_case):
+            return "再审"
+
+        # （d）二审 / 一审
         if re.search(r"(民终|行终|刑终|知民终|知行终|知刑终|破终|赔终)", src_case):
             return "二审"
         if re.search(r"(民初|行初|刑初|知民初|知行初|知刑初|破初|赔初)", src_case):
             return "一审"
 
+        # （e）执行程序：大量执行案号以“执”起始（执恢/执异/执配/执保/执破等）
+        if re.search(r"[\u4e00-\u9fa5A-Z]*执[\u4e00-\u9fa5A-Z]*\d+号", src_case):
+            return "执行程序"
+
+    # 3) 若案号无法判定，再回退到正文关键字（你原来的规则，略做稳健化）
     if re.search(r"本(判决|裁定)为终审(判决|裁定)", head):
         return "二审"
 
@@ -129,10 +169,6 @@ def detect_trial_level(text: str, case_no: str = "") -> str:
         return "赔偿委员会申诉"
     if re.search(r"赔偿委员会.{0,10}(决定书|决定)", head) or re.search(r"（\d{4}）[^，\n]*委赔[^号]*号", head):
         return "赔偿委员会决定"
-    if re.search(r"(复议决定书|复议决定).{0,8}(国家赔偿|赔偿)", head):
-        return "复议决定"
-    if re.search(r"(赔偿决定书|赔偿决定).{0,20}(行政机关|赔偿义务机关|国家赔偿)", head):
-        return "赔偿决定"
 
     if re.search(r"再审(申请)?审查", head):
         return "再审审查"
@@ -149,6 +185,7 @@ def detect_trial_level(text: str, case_no: str = "") -> str:
 
     if re.search(r"执行(裁定|决定|异议|复议|分配|拍卖|变卖|终结|终止|恢复|追加|变更|限制|罚款|拘留)", head):
         return "执行程序"
+
     return ""
 
 
@@ -228,23 +265,96 @@ def _clean_court_candidate(candidate: str) -> str:
             best = piece
     return best
 
+# 预编译正则
+_RX_COURT_NAME = re.compile(r"(?P<name>[\u4e00-\u9fa5]{2,40}人民法院(?:赔偿委员会)?)")
+# 文书种类行（含国家赔偿常见样式：决定书/赔偿决定书/国家赔偿决定书/中止审理决定书等）
+_RX_DOCTYPE = re.compile(r"(判决书|裁定书|决定书|调解书|赔偿决定书|国家赔偿决定书|中止审理决定书)")
+# 精确整行仅为“××人民法院(赔偿委员会)”的情况
+_RX_EXACT = re.compile(r"^(?P<name>[\u4e00-\u9fa5]{2,40}人民法院(?:赔偿委员会)?)$")
 
-def _detect_court(text: str) -> str:
-    head = text[:4000]
-    best = ""
-    best_len = 0
-    for raw in head.splitlines():
-        if "人民法院" not in raw:
+_BAD_PREFIX = ("请求", "撤销", "维持", "依照", "依据", "判处", "决定", "裁定", "驳回", "公告")
+
+def _detect_court(text: str, head_n: int = 100) -> str:
+    """
+    从裁判/国家赔偿类文书前若干行中抽取承办机关：
+    优先返回“××人民法院赔偿委员会”，否则返回“××人民法院”，找不到返回空串。
+    """
+    # 预处理：去除空行，仅保留前 head_n 行
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()][:head_n]
+
+    # 1) 精确整行匹配（标题独占一行）
+    for ln in lines:
+        m = _RX_EXACT.match(ln)
+        if m:
+            return m.group("name")
+
+    # 2) 找到文书种类行（判决书/裁定书/决定书/赔偿决定书…），在其上方近邻行里找法院机构
+    doc_idx = next((i for i, ln in enumerate(lines) if _RX_DOCTYPE.search(ln)), -1)
+    if doc_idx > 0:
+        for j in range(max(0, doc_idx - 5), doc_idx):  # 往上看 5 行
+            m = _RX_COURT_NAME.search(lines[j])
+            if m:
+                # 若同一行出现“赔偿委员会”，优先返回带后缀
+                name = m.group("name")
+                if name.endswith("赔偿委员会"):
+                    return name
+                # 先暂存，若稍后未发现“赔偿委员会”，再回退使用
+                fallback = name
+                # 再向更近的上方继续搜“赔偿委员会”
+                for k in range(max(0, j - 2), j + 1):
+                    mm = _RX_COURT_NAME.search(lines[k])
+                    if mm and mm.group("name").endswith("赔偿委员会"):
+                        return mm.group("name")
+                return fallback  # 就近返回
+
+    # 3) 通用候选 + 打分（位置、是否独占、是否带“赔偿委员会”、是否带可疑前缀等）
+    candidates = []
+    for i, ln in enumerate(lines):
+        m = _RX_COURT_NAME.search(ln)
+        if not m:
             continue
-        candidates = RE_COURT.findall(raw)
-        if not candidates:
-            continue
-        for cand in candidates:
-            cleaned = _clean_court_candidate(cand)
-            if cleaned and len(cleaned) > best_len:
-                best = cleaned
-                best_len = len(cleaned)
-    return best
+        name = m.group("name")
+        score = 100
+
+        # 越靠前分越低
+        if i <= 5: score -= 20
+        elif i <= 10: score -= 15
+        elif i <= 20: score -= 8
+        else: score -= 3
+
+        # 紧邻文书种类行的加权
+        if doc_idx != -1:
+            dist = doc_idx - i
+            if 0 < dist <= 5:
+                score -= (15 - dist)  # 越近分越低
+
+        # 独占一行 / 行尾即为机构名
+        if _RX_EXACT.match(ln): score -= 15
+        if ln.endswith(name): score -= 5
+
+        # 含“赔偿委员会”优先
+        if name.endswith("赔偿委员会"): score -= 10
+
+        # 可疑开头（多为叙述句，而非抬头）
+        if ln[:2] in _BAD_PREFIX or any(ln.startswith(p) for p in _BAD_PREFIX):
+            score += 10
+
+        # 名称长度略作偏好：中等长度更常见
+        score += abs(len(name) - 10) * 0.5
+
+        candidates.append((score, i, len(name), name))
+
+    if candidates:
+        candidates.sort()
+        # 若榜首不是“赔偿委员会”，但前若干名里存在“赔偿委员会”，择其一
+        top_names = [c[3] for c in candidates[:5]]
+        for nm in top_names:
+            if nm.endswith("赔偿委员会"):
+                return nm
+        return candidates[0][3]
+
+    return ""
+
 
 def detect_judgment_date(text: str) -> str:
     matches = []
@@ -293,6 +403,12 @@ SECTION_PATTERNS = [
     ("标题", r"[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-.]{2,30}(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)\s*$"),
     ("案号行", r"^\s*[（(]\d{4}[）)][^号\n]{0,40}号\s*$"),
     ("当事人信息", r"^(上诉人|被上诉人|原告|被告|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)"),
+    ("上诉请求", r"^[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】、·\s]{0,30}(上诉请求|诉讼请求|抗诉请求)[:：]?$"),
+    ("答辩/抗辩", r"^[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】、·\s]{0,30}(答辩意见|抗辩意见|辩称|答辩)[:：]?$"),
+    ("一审查明", r"^(一审法院认定事实|原审法院认定事实|一审法院查明|原审查明)[:：]?$"),
+    ("一审认为", r"^(一审法院认为|原审法院认为)[:：]?$"),
+    ("一审判决", r"^(一审判决|原审判决|一审裁定|原审裁定|原审裁判)[:：]?$"),
+    ("二审争议焦点", r"^(本案二审争议焦点|争议焦点)[:：]?$"),
     ("审理经过", r"^(本院于.*立案后|依法组成合议庭|开庭进行了审理|审理经过|案件受理)"),
     ("诉讼请求", r"^(诉讼请求|上诉请求|抗诉请求)"),
     ("答辩/抗辩", r"^(答辩情况|抗辩意见|辩称|被上诉人答辩)"),
