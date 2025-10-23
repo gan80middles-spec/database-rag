@@ -402,32 +402,49 @@ def extract_light_meta(text: str, file_path: str = ""):
 SECTION_PATTERNS = [
     ("标题", r"[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-.]{2,30}(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)\s*$"),
     ("案号行", r"^\s*[（(]\d{4}[）)][^号\n]{0,40}号\s*$"),
-    ("当事人信息", r"^(上诉人|被上诉人|原告|被告|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)"),
-    ("上诉请求", r"^[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】、·\s]{0,30}(上诉请求|诉讼请求|抗诉请求)[:：]?$"),
-    ("答辩/抗辩", r"^[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】、·\s]{0,30}(答辩意见|抗辩意见|辩称|答辩)[:：]?$"),
-    ("一审查明", r"^(一审法院认定事实|原审法院认定事实|一审法院查明|原审查明)[:：]?$"),
+
+    # 当事人开头（行政、民行通用）
+    ("当事人信息", r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)"),
+
+    # “原审/一审判决如下”要先于“主文”命中，避免误把原审主文当成本审主文
+    ("一审判决", r"^(原审|一审)(法院)?(判决|裁定|决定)[^。\n]{0,10}[:：]?$|^(原审|一审)[^。\n]{0,40}(判决如下|裁定如下|决定如下)"),
+
+    ("一审查明", r"^(一审法院|原审法院)(认定事实|查明|认为)[:：]?$"),
     ("一审认为", r"^(一审法院认为|原审法院认为)[:：]?$"),
-    ("一审判决", r"^(一审判决|原审判决|一审裁定|原审裁定|原审裁判)[:：]?$"),
-    ("二审争议焦点", r"^(本案二审争议焦点|争议焦点)[:：]?$"),
-    ("审理经过", r"^(本院于.*立案后|依法组成合议庭|开庭进行了审理|审理经过|案件受理)"),
-    ("诉讼请求", r"^(诉讼请求|上诉请求|抗诉请求)"),
-    ("答辩/抗辩", r"^(答辩情况|抗辩意见|辩称|被上诉人答辩)"),
+
+    # “争议焦点”常见两种写法
+    ("二审争议焦点", r"^(本案)?二审[^\n]{0,6}争议焦点[:：]?$"),
+    ("争议焦点",   r"^(本案)?争议焦点[:：]?$"),
+
+    # “审理经过”经常出现在句中（受理后/立案后/依法组成合议庭/公开开庭/审理终结）
+    # 这里不加 ^，交给 LOOSE 搜索
+    ("审理经过", r"(本院于.*?(立案|受理)后|依法组成合议庭|公开开庭审理|现已审理终结|经本院审理)"),
+
+    # 查明/理由/依据/主文/尾部
     ("查明", r"^(经审理查明|本院查明|查明事实|案件基本事实)"),
-    ("争议焦点", r"^(本案(?:二审|一审)?争议焦点)"),
-    ("理由", r"^(本院(?:经审理|经审查)?认为|法院认为|合议庭认为|本院意见)"),
+    ("理由", r"^(本院(经审理|经审查)?认为|法院认为|合议庭认为|本院意见|判决理由)"),
     ("依据", r"^(依照|根据)[^。\n]{0,80}"),
     ("主文", r"^(裁判主文|判决如下|裁定如下|决定如下)"),
     ("尾部", r"^(审判长|审判员|人民陪审员|书记员|本判决为终审判决|本裁定为终审裁定)"),
 ]
+
 SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS]
+
+# 哪些属于“弱锚点”，允许出现在行中（用 search）
+LOOSE_NAMES = {"审理经过"}  # 也可按需加入少量易出现在句中的标题
 
 
 def _match_section_name(raw: str):
     s = raw.strip()
     if not s:
         return None
+    # 先强锚：行首匹配
     for name, pat in SEC_COMPILED:
         if pat.match(s):
+            return name
+    # 再弱锚：少数标题允许行中出现
+    for name, pat in SEC_COMPILED:
+        if name in LOOSE_NAMES and pat.search(s):
             return name
     return None
 
@@ -442,8 +459,23 @@ def split_sections(text: str):
                 name = None
             else:
                 seen_case_no = True
+
+        if name == "主文" and re.search(r"(原审|一审)[^。\n]{0,12}(判决|裁定|决定)", raw):
+            name = "一审判决"
+
         if name:
             markers.append((i, name))
+
+    if any(n == "案号行" for _, n in markers) and not any(n == "当事人信息" for _, n in markers):
+        start = next(ln for ln, n in markers if n == "案号行")
+        lim = min(len(lines), start + 50)
+        rx_party = re.compile(r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)")
+        for j in range(start+1, lim):
+            if rx_party.match(lines[j].strip()):
+                markers.append((j, "当事人信息"))
+                markers.sort()
+                break
+            
     if len(markers) < 2 or {name for _, name in markers} == {"案号行"}:
         parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
         if len(parts) <= 1:
@@ -527,48 +559,71 @@ def gentle_split_long_block(s: str, hard_limit=1600, target=900):
         if tmp: refined.append(tmp)
     return [x.strip() for x in refined if x.strip()]
 
-def aggregate_chunks(sections, min_chars=700, max_chars=1200, overlap=120):
-    expanded = []
-    for sec in sections:
-        for seg in gentle_split_long_block(sec["text"]):
-            expanded.append({"name": sec["name"], "text": seg})
+def _chunk_one_section(sec_name: str, sec_text: str,
+                       min_chars=700, max_chars=1200, overlap=120):
+    """
+    仅在【该 section 内】切块：
+      - 先做一次“温和”的结构化拆分（条款/空行/句号）；
+      - 再用滑动窗口合并到目标大小；
+      - overlap 仅在本段内部生效；
+      - 主文/依据：强制独立成块，不与其它段落合并。
+    """
+    # 先把很长的一段拆细（条款/空行/句号为优先分隔）
+    blocks = gentle_split_long_block(
+        sec_text,
+        hard_limit=max_chars,                 # 每小块的硬上限
+        target=(min_chars + max_chars) // 2   # 软目标
+    )
+    # “主文/依据”不再合并，直接返回
+    if sec_name in ("主文", "依据"):
+        return [b.strip() for b in blocks if b.strip()]
 
-    chunks, buf, buf_len = [], [], 0
-    def flush(allow_overlap=True):
-        nonlocal buf, buf_len
-        if not buf: return
-        text = "\n".join([b["text"] for b in buf]).strip()
-        names = [b["name"] for b in buf]
-        chunks.append({
-            "text": text,
-            "section_span": names[0] + (("~" + names[-1]) if names[-1]!=names[0] else "")
-        })
-        if allow_overlap and overlap > 0 and text:
-            tail = text[-overlap:]
-            buf = [{"name": buf[-1]["name"], "text": tail}]
-            buf_len = len(tail)
-        else:
-            buf, buf_len = [], 0
-
-    for seg in expanded:
-        seglen = len(seg["text"])
-        if buf_len == 0:
-            buf = [seg]; buf_len = seglen
-            if buf_len >= max_chars: flush(True)
+    chunks, buf = [], ""
+    for p in blocks:
+        p = p.strip()
+        if not p:
             continue
-        if buf[-1]["name"] in ("主文","依据") and seg["name"] not in ("主文","依据"):
-            flush(False)
-        if buf_len + 1 + seglen <= max_chars:
-            buf.append(seg); buf_len += 1 + seglen
+        if not buf:
+            buf = p
+            continue
+        # 能合就合，控制在 max_chars 内
+        if len(buf) + 1 + len(p) <= max_chars:
+            buf = f"{buf}\n{p}"
         else:
-            if buf_len >= min_chars:
-                flush(True); buf = [seg]; buf_len = seglen
-                if buf_len >= max_chars: flush(True)
+            # 推出一个块，并在【本段内】做 overlap
+            chunks.append(buf.strip())
+            if overlap > 0 and len(buf) > overlap:
+                tail = buf[-overlap:]
+                buf = f"{tail}\n{p}"
             else:
-                flush(True); buf = [seg]; buf_len = seglen
-                if buf_len >= max_chars: flush(True)
-    if buf_len > 0: flush(False)
+                buf = p
+    if buf.strip():
+        chunks.append(buf.strip())
     return chunks
+
+
+def aggregate_chunks(sections, min_chars=700, max_chars=1200, overlap=120):
+    """
+    改为严格“分段优先”：逐段切块、逐段产出。
+    - 不跨 section 合并（因此不会再出现 `开头~当事人信息` 这类跨段标签）
+    - section_span 直接就是该段名
+    - 主文/依据天然独立
+    """
+    all_chunks = []
+    for sec in sections:
+        sec_name = sec["name"]
+        sec_text = sec["text"]
+        # 逐段切块
+        pieces = _chunk_one_section(
+            sec_name, sec_text,
+            min_chars=min_chars, max_chars=max_chars, overlap=overlap
+        )
+        for txt in pieces:
+            all_chunks.append({
+                "text": txt,
+                "section_span": sec_name
+            })
+    return all_chunks
 
 # ---------- system/subtype 推断 ----------
 SYSTEM_ALIASES = {
