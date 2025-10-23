@@ -30,9 +30,9 @@ def normalize_text(t: str) -> str:
 
 # ---------- 轻量元数据 ----------
 RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
-RE_COURT   = re.compile(r"[^\n]{0,30}人民法院")
-RE_DATE    = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
-RE_TRIAL   = re.compile(r"(一审|二审|再审|重审|再审审查|执行|赔偿委员会|赔偿监督审查)")
+RE_COURT   = re.compile(r"[\u4e00-\u9fa5]{2,30}人民法院")
+RE_DATE_ARABIC = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
+RE_DATE_CHINESE = re.compile(r"([〇零○ＯO一二三四五六七八九十百千两]{3,})年([〇零○ＯO一二三四五六七八九十两]{1,3})月([〇零○ＯO一二三四五六七八九十两]{1,3})日")
 RE_STATUTE = re.compile(r"《[^》]{1,30}》第?[一二三四五六七八九十百千0-9]+条")
 
 DOC_TYPE_TAILS = [
@@ -100,53 +100,163 @@ def detect_doc_type(text: str, file_path: str = "") -> str:
     return best
 
 def detect_trial_level(text: str) -> str:
-    head = text[:4000]
-    priority = [
-        "赔偿监督审查",
-        "赔偿委员会",
-        "再审审查",
-        "再审",
-        "重审",
-        "二审",
-        "一审",
-        "执行",
+    """
+    返回统一规范的审级/程序标签（trial_level）：
+      - 赔偿委员会申诉｜赔偿委员会决定
+      - 复议决定｜赔偿决定（行政赔偿线）
+      - 再审审查｜再审｜二审｜一审｜死刑复核
+      - 执行程序
+    匹配顺序按“越具体优先”。
+    """
+    head = text[:8000]
+
+    patterns = [
+        # —— 国家赔偿（司法赔偿线：赔偿委员会）——
+        # 监督程序/申诉到上一级赔偿委员会
+        (r"(委赔监|赔偿监督程序|赔偿监督审查)",                   "赔偿委员会申诉"),
+        (r"赔偿委员会.{0,30}(申诉|监督程序|监督审查|申诉审查)",     "赔偿委员会申诉"),
+        (r"(驳回|支持).{0,6}申诉",                                  "赔偿委员会申诉"),
+
+        # 同级赔偿委员会作出的决定
+        (r"赔偿委员会.{0,10}(决定书|决定)",                         "赔偿委员会决定"),
+        (r"（\d{4}）[^，\n]*委赔[^号]*号",                           "赔偿委员会决定"),
+
+        # —— 国家赔偿（行政赔偿线）——
+        (r"(复议决定书|复议决定).{0,8}(国家赔偿|赔偿)",               "复议决定"),
+        (r"(赔偿决定书|赔偿决定).{0,20}(行政机关|赔偿义务机关|国家赔偿)", "赔偿决定"),
+
+        # —— 特殊程序 ——
+        (r"死刑复核",                                               "死刑复核"),
+
+        # —— 再审链路 ——
+        (r"再审(申请)?审查",                                        "再审审查"),
+        (r"(再审|重审).{0,6}(判决|裁定|决定)",                       "再审"),
+
+        # —— 二审/一审：显式用语优先 ——
+        (r"二审(判决|裁定|决定)?",                                  "二审"),
+        (r"一审(判决|裁定|决定)?",                                  "一审"),
+
+        # —— 二审/一审：从案号代码判断（行终/民终/刑终 ~ 二审；行初/民初/刑初 ~ 一审）——
+        (r"(行终|民终|刑终)",                                       "二审"),
+        (r"(行初|民初|刑初)",                                       "一审"),
+
+        # —— 执行程序（不是审级，单列为程序标签）——
+        (r"执行(裁定|决定|异议|复议|和解|分配|拍卖|变卖|终结|终止|恢复|追加|变更|限制|罚款|拘留)", "执行程序"),
+        (r"\b执行\b",                                               "执行程序"),
     ]
-    for key in priority:
-        if key in head:
-            return key
+
+    for pat, label in patterns:
+        if re.search(pat, head):
+            return label
     return ""
 
+
+def _chinese_digits_to_int(s: str) -> int:
+    mapping = {
+        "零": 0, "〇": 0, "○": 0, "Ｏ": 0, "O": 0, "o": 0,
+        "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    }
+    digits = []
+    for ch in s:
+        if ch in mapping:
+            digits.append(str(mapping[ch]))
+        elif ch.isdigit():
+            digits.append(ch)
+        else:
+            return -1
+    try:
+        return int("".join(digits))
+    except ValueError:
+        return -1
+
+
+def _parse_chinese_number(num: str) -> int:
+    num = num.strip()
+    if not num:
+        return -1
+    digit_value = _chinese_digits_to_int(num)
+    if digit_value >= 0:
+        return digit_value
+
+    char_map = {
+        "零": 0, "〇": 0, "○": 0, "Ｏ": 0,
+        "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    }
+    total = 0
+    unit = 0
+    for ch in num:
+        if ch == "十":
+            total += (unit if unit else 1) * 10
+            unit = 0
+        else:
+            val = char_map.get(ch)
+            if val is None:
+                return -1
+            unit = unit + val
+    total += unit
+    return total
+
+
+def _detect_court(text: str) -> str:
+    head = text[:4000]
+    best = ""
+    for raw in head.splitlines():
+        if "人民法院" not in raw:
+            continue
+        candidates = RE_COURT.findall(raw)
+        if not candidates:
+            continue
+        # 取最长匹配，通常是全称
+        candidate = max(candidates, key=len)
+        candidate = candidate.strip()
+        if len(candidate) > len(best):
+            best = candidate
+    return best
+
 def detect_judgment_date(text: str) -> str:
-    matches = list(RE_DATE.finditer(text))
-    if not matches:
-        return ""
-    best = None
-    best_score = None
+    matches = []
     length = len(text)
-    for m in matches:
-        year, month, day = m.group(1), int(m.group(2)), int(m.group(3))
+
+    for m in RE_DATE_ARABIC.finditer(text):
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
         ctx = text[max(0, m.start()-20):min(length, m.end()+20)]
         has_keyword = bool(re.search(r"判决|裁定|决定|调解|赔偿|结案|审理终结", ctx))
         dist = length - m.start()
         score = (0 if has_keyword else 1000) + dist
-        if best is None or score < best_score:
-            best = (year, month, day)
-            best_score = score
-    if best:
-        return f"{best[0]}-{best[1]:02d}-{best[2]:02d}"
-    last = matches[-1]
-    return f"{last.group(1)}-{int(last.group(2)):02d}-{int(last.group(3)):02d}"
+        matches.append((score, year, month, day))
+
+    for m in RE_DATE_CHINESE.finditer(text):
+        year_raw, month_raw, day_raw = m.group(1), m.group(2), m.group(3)
+        year = _parse_chinese_number(year_raw)
+        month = _parse_chinese_number(month_raw)
+        day = _parse_chinese_number(day_raw)
+        if year < 0 or month <= 0 or day <= 0:
+            continue
+        ctx = text[max(0, m.start()-20):min(length, m.end()+20)]
+        has_keyword = bool(re.search(r"判决|裁定|决定|调解|赔偿|结案|审理终结", ctx))
+        dist = length - m.start()
+        score = (0 if has_keyword else 1000) + dist
+        matches.append((score, year, month, day))
+
+    if not matches:
+        return ""
+
+    best = min(matches, key=lambda x: (x[0], -x[1], -x[2], -x[3]))
+    _, year, month, day = best
+    return f"{year:04d}-{month:02d}-{day:02d}"
 
 def extract_light_meta(text: str, file_path: str = ""):
     head = text[:4000]
     m_case_no = RE_CASE_NO.search(head)
-    m_court   = RE_COURT.search(head)
+    court = _detect_court(text)
     doc_type  = detect_doc_type(text, file_path)
     trial     = detect_trial_level(text)
     statutes  = list(dict.fromkeys([x.group(0) for x in RE_STATUTE.finditer(text)]))[:50]
     return {
         "case_number": m_case_no.group(0) if m_case_no else "",
-        "court": (m_court.group(0) if m_court else "").strip(),
+        "court": court.strip() if court else "",
         "judgment_date": detect_judgment_date(text),
         "doc_type": doc_type,
         "trial_level": trial,
@@ -190,7 +300,7 @@ def split_sections(text: str):
         name = _match_section_name(raw)
         if name:
             markers.append((i, name))
-    if len(markers) < 2:
+    if len(markers) < 2 or {name for _, name in markers} == {"案号行"}:
         parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
         if len(parts) <= 1:
             lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
