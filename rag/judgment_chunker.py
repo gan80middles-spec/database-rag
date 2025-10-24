@@ -582,7 +582,73 @@ PARTY_ROLE_PATTERN = (
 PARTY_HEAD_PATTERN = rf"^(?:{PARTY_ROLE_PATTERN})(?:[（(][^：:（）()]{{0,30}}[）)])*\s*[：:]"
 
 PARTY_HEAD = re.compile(PARTY_HEAD_PATTERN)
-PARTY_HEAD_IN_TEXT = re.compile(PARTY_HEAD_PATTERN, re.M)
+
+PARTY_HEAD_PREFIX = re.compile(
+    rf"(?:{PARTY_ROLE_PATTERN})(?:[（(][^：:（）()]{{0,30}}[）)])*"
+)
+
+PARTY_HEAD_BAD_PREFIXES = (
+    "诉讼请求",
+    "上诉请求",
+    "反诉请求",
+    "申请",
+    "请求",
+    "诉称",
+    "主张",
+    "答辩",
+    "辩称",
+    "辩护意见",
+    "辩护人意见",
+    "意见",
+    "陈述",
+    "情况",
+    "事实与理由",
+    "事实和理由",
+)
+
+
+def _is_party_head_line(line: str) -> bool:
+    line = (line or "").strip()
+    if not line:
+        return False
+    if PARTY_HEAD.match(line):
+        return True
+
+    prefix = PARTY_HEAD_PREFIX.match(line)
+    if not prefix:
+        return False
+
+    rest = line[prefix.end():].lstrip("：:，,。；;、 　\t")
+    if not rest:
+        return True
+
+    for bad in PARTY_HEAD_BAD_PREFIXES:
+        if rest.startswith(bad):
+            return False
+
+    return True
+
+
+def _find_party_head_index(text: str) -> int:
+    if not text:
+        return -1
+
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped and _is_party_head_line(stripped):
+            start = line.find(stripped)
+            if start >= 0:
+                return offset + start
+        for match in PARTY_HEAD_PREFIX.finditer(line):
+            candidate = line[match.start():].lstrip()
+            if not candidate:
+                continue
+            if _is_party_head_line(candidate):
+                delta = len(line[match.start():]) - len(candidate)
+                return offset + match.start() + delta
+        offset += len(line)
+    return -1
 
 PARTY_BLOCK_STOP_TOKENS = [
     "本院于", "受理后", "依法组成合议庭", "公开开庭审理", "本案现已审理终结", "审理经过", "原审法院", "一审法院",
@@ -769,16 +835,16 @@ def split_sections(text: str, system_hint: str = ""):
     i, n = 0, len(lines)
     while i < n:
         line = lines[i].strip()
-        if PARTY_HEAD.match(line):
+        if _is_party_head_line(line):
             start = i
             j = i + 1
             while j < n:
                 cur = lines[j].strip()
-                if PARTY_HEAD.match(cur):
+                if _is_party_head_line(cur):
                     j += 1
                     continue
                 if not cur:
-                    if j + 1 < n and PARTY_HEAD.match(lines[j+1].strip()):
+                    if j + 1 < n and _is_party_head_line(lines[j+1].strip()):
                         j += 1
                         continue
                     break
@@ -796,7 +862,7 @@ def split_sections(text: str, system_hint: str = ""):
         start = next(ln for ln, nm in markers if nm == "案号行")
         lim = min(len(lines), start + 60)
         for j in range(start+1, lim):
-            if PARTY_HEAD.match(lines[j].strip()):
+            if _is_party_head_line(lines[j].strip()):
                 markers.append((j, "当事人信息"))
                 break
 
@@ -845,24 +911,23 @@ def _post_split_fixup(sections):
             continue
 
         if nm == "案号行":
-            m1 = PARTY_HEAD_IN_TEXT.search(tx)
-            if m1:
-                head_part = tx[:m1.start()].strip()
-                rest = tx[m1.start():].strip()
+            idx = _find_party_head_index(tx)
+            if idx >= 0:
+                head_part = tx[:idx].strip()
+                rest = tx[idx:].strip()
                 if head_part:
                     _extend("案号行", head_part)
-                m2 = re.search(r"(本院于|受理后|依法组成合议庭|公开开庭审理|本案现已审理终结|原审法院.{0,12}作出[（(]\d{4}[）)])", rest)
-                if m2:
-                    party_part = rest[:m2.start()].strip()
-                    trial_part = rest[m2.start():].strip()
-                    if party_part:
-                        _extend("当事人信息", party_part)
-                    if trial_part:
-                        _extend("审理经过", trial_part)
-                    continue
-                else:
-                    if rest:
-                        _extend("当事人信息", rest)
+                if rest:
+                    m2 = re.search(r"(本院于|受理后|依法组成合议庭|公开开庭审理|本案现已审理终结|原审法院.{0,12}作出[（(]\d{4}[）)])", rest)
+                    if m2:
+                        party_part = rest[:m2.start()].strip()
+                        trial_part = rest[m2.start():].strip()
+                        if party_part:
+                            _extend("当事人信息", party_part)
+                        if trial_part:
+                            _extend("审理经过", trial_part)
+                        continue
+                    _extend("当事人信息", rest)
                     continue
 
         if nm == "当事人信息":
