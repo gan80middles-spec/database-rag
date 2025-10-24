@@ -54,6 +54,8 @@ BAN_KEYWORDS = (
 PAREN_PAIRS = {"（": "）", "(": ")", "【": "】", "[": "]", "〔": "〕"}
 STATUTE_CONNECTORS = set("、,，；;和及与或并及至到—-~ 　")
 
+STATUTE_VERSION_PAREN_RE = re.compile(r"(》)\s*(?:（[^）]{0,30}）|\([^)]{0,30}\))*")
+
 
 def _is_normative_title(name: str) -> bool:
     """判断《……》内是否为规范性文件名，而不是合同/证书/报告等。"""
@@ -162,8 +164,25 @@ def _extract_statutes(text: str, allow_title_without_article: bool = False):
 
         idx = max(pos, m.end())
 
-    deduped = list(dict.fromkeys(results))
+    deduped = _dedupe_statutes(results)
     return deduped[:50]
+
+
+def _dedupe_statutes(statutes):
+    seen = {}
+    for statute in statutes:
+        key = _normalize_statute_key(statute)
+        if key not in seen:
+            seen[key] = statute
+    return list(seen.values())
+
+
+def _normalize_statute_key(statute: str) -> str:
+    if not statute:
+        return ""
+    normalized = STATUTE_VERSION_PAREN_RE.sub(r"\1", statute)
+    normalized = re.sub(r"\s+", "", normalized)
+    return normalized
 
 CASE_CODE_TO_LEVEL = {
     # 再审链路
