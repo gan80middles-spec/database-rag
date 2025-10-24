@@ -33,15 +33,38 @@ RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
 RE_CASE_NO_STRICT = re.compile(r"[（(]\d{4}[）)][^号\n]{0,40}号")
 RE_COURT   = re.compile(r"[\u4e00-\u9fa5]{2,30}人民法院")
 RE_DATE_CHINESE = re.compile(r"([〇零○ＯO一二三四五六七八九十百千两]{3,})年([〇零○ＯO一二三四五六七八九十两]{1,3})月([〇零○ＯO一二三四五六七八九十两]{1,3})日")
-LAW_NAME_RE = re.compile(r"《([^》]{1,40})》")
+LAW_NAME_RE = re.compile(r"《([^》\n]{1,60})》")
+
 NUM_TOKEN = "一二三四五六七八九十百千万零〇○ＯO两0-9"
 ARTICLE_RE = re.compile(
     rf"第[{NUM_TOKEN}]+(?:之[{NUM_TOKEN}]+)?条"
     rf"(?:第[{NUM_TOKEN}]+款)?"
     rf"(?:第[{NUM_TOKEN}]+[项目段])?"
 )
+
+NORMATIVE_SUFFIXES = ("法典", "法律", "法", "条例", "规定", "解释", "决定", "办法", "规则", "纪要")
+BAN_KEYWORDS = (
+    "合同", "协议", "议定书", "章程", "指南", "细则", "目录", "名录",
+    "报告", "汇报", "说明", "情况", "统计表", "表", "清单",
+    "证书", "许可证", "执照", "证明", "授权书",
+    "通知书", "告知书", "答复", "批复", "申请书",
+    "购销合同", "委托加工合同"
+)
+
 PAREN_PAIRS = {"（": "）", "(": ")", "【": "】", "[": "]", "〔": "〕"}
 STATUTE_CONNECTORS = set("、,，；;和及与或并及至到—-~ 　")
+
+
+def _is_normative_title(name: str) -> bool:
+    """判断《……》内是否为规范性文件名，而不是合同/证书/报告等。"""
+    n = (name or "").strip()
+    if not n:
+        return False
+    if any(bad in n for bad in BAN_KEYWORDS):
+        return False
+    if any(n.endswith(suf) for suf in NORMATIVE_SUFFIXES):
+        return True
+    return False
 
 
 def _skip_whitespace(text: str, pos: int) -> int:
@@ -71,20 +94,28 @@ def _consume_parenthetical(text: str, pos: int) -> int:
     return pos
 
 
-def _extract_statutes(text: str):
+def _extract_statutes(text: str, allow_title_without_article: bool = False):
+    """
+    只返回“规范性文件 + 条/款/项”的引用；
+    allow_title_without_article=True 时，才会保留不带条/款/项的纯标题（默认 False）。
+    """
     clean = _fix_broken_statute_spans(text)
     results = []
-    idx = 0
-    length = len(clean)
+    idx, length = 0, len(clean)
 
     while idx < length:
         m = LAW_NAME_RE.search(clean, idx)
         if not m:
             break
 
+        raw_name = m.group(1).strip()
+        if not _is_normative_title(raw_name):
+            idx = m.end()
+            continue
+
         law_text = clean[m.start():m.end()]
         pos = m.end()
-        # 附近短括号信息（如“2017年修正”），但跳过“以下简称”等
+
         while True:
             pos = _skip_whitespace(clean, pos)
             if pos >= length or clean[pos] not in PAREN_PAIRS:
@@ -126,12 +157,13 @@ def _extract_statutes(text: str):
 
             break
 
-        if not consumed:
+        if not consumed and allow_title_without_article:
             results.append(law_text)
 
         idx = max(pos, m.end())
 
-    return results
+    deduped = list(dict.fromkeys(results))
+    return deduped[:50]
 
 CASE_CODE_TO_LEVEL = {
     # 再审链路
@@ -449,7 +481,7 @@ def detect_judgment_date(text: str) -> str:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 def _fix_broken_statute_spans(text: str) -> str:
-    # 书名号跨行、条款拆行
+    # 书名号跨行、条款拆行 → 合并
     t = re.sub(r"《\s*([^》\n]{1,40})\s*》", r"《\1》", text)
     t = re.sub(r"《([^》\n]{1,25})\n+([^》\n]{1,25})》", r"《\1\2》", t)
     t = re.sub(r"第\s*([一二三四五六七八九十百千0-9]+)\s*条", r"第\1条", t)
