@@ -17,7 +17,9 @@ import os
 import re
 import json
 import argparse
+from datetime import datetime
 from hashlib import sha1
+from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------- 基础清洗 ----------
@@ -526,129 +528,215 @@ def extract_light_meta(text: str, file_path: str = ""):
 
 # ---------- 深度信息抽取 ----------
 
-def _parse_term_number(num_str: str) -> int:
-    num_str = (num_str or "").strip()
-    if not num_str:
-        return -1
-    if num_str.isdigit():
-        try:
-            return int(num_str)
-        except ValueError:
-            return -1
-    value = _parse_chinese_number(num_str)
-    if value >= 0:
-        return value
-    digits = re.sub(r"\D", "", num_str)
-    if digits:
-        try:
-            return int(digits)
-        except ValueError:
-            return -1
-    return -1
+# ===== 深度信息抽取：最优实现（可直接粘贴） =====
+# 仅用标准库；不改你现有切块逻辑。主入口：deep_extract_from_chunks(chunks)
+# 若需要把 doc 级结果挂到 chunk，可调用 attach_doc_info(chunks, doc_info, mode="first"/"all")
+
+_CN_DIGITS = {"零":0, "〇":0, "○":0, "Ｏ":0, "O":0, "一":1, "二":2, "两":2, "三":3, "四":4, "五":5, "六":6, "七":7, "八":8, "九":9}
+_CN_UNITS = {"十":10, "百":100, "千":1000, "万":10000, "亿":100000000}
 
 
-def _chinese_term_to_months(term_str: str) -> int:
+def _cn_simple_num_to_int(s: str) -> Optional[int]:
     """
-    将形如 "X年Y个月"、"X年"、"Y个月" 的刑期描述转换为总月数。
-    对于“无期徒刑”“死刑”等，返回 None。
+    将中文数字（含混合阿拉伯数字）转为 int。
+    支持：十/二十/二十五/一万六千/三千二百一十/12/12万/1万6千 等常见写法。
     """
-    term_str = (term_str or "").strip()
-    if not term_str:
+
+    if not s:
         return None
-    if "无期" in term_str or "死刑" in term_str:
+    s = s.strip()
+    if re.fullmatch(r"\d+", s):
+        return int(s)
+
+    total, unit, num = 0, 1, 0
+    i = 0
+    s = ''.join({'０':'0','１':'1','２':'2','３':'3','４':'4','５':'5','６':'6','７':'7','８':'8','９':'9'}.get(ch, ch) for ch in s)
+
+    for big_unit, big_val in [("亿", 100000000), ("万", 10000)]:
+        if big_unit in s:
+            parts = s.split(big_unit)
+            left = _cn_simple_num_to_int(parts[0])
+            right = _cn_simple_num_to_int(parts[1]) if len(parts) > 1 and parts[1] else 0
+            if left is None:
+                left = 1
+            return left * big_val + (right or 0)
+
+    tmp = 0
+    has_unit = False
+    for ch in s:
+        if ch in _CN_DIGITS:
+            tmp = tmp * 10 + _CN_DIGITS[ch]
+        elif ch.isdigit():
+            tmp = tmp * 10 + int(ch)
+        elif ch in _CN_UNITS:
+            val = _CN_UNITS[ch]
+            has_unit = True
+            if tmp == 0:
+                tmp = 1
+            total += tmp * val
+            tmp = 0
+        else:
+            pass
+    total += tmp
+    if has_unit and total == 0:
+        return None
+    return total if total != 0 else None
+
+
+def _parse_term_to_months(term: str) -> Optional[int]:
+    """
+    刑期描述 -> 月数。
+    识别：X年Y个月 / X年 / Y个月 / 数字&中文混合。无期/死刑 -> None。
+    """
+
+    if not term:
+        return None
+    if "无期" in term or "死刑" in term:
+        return None
+    years = 0
+    months = 0
+    m_year = re.search(r"([〇零一二两三四五六七八九十百千\d]+)\s*年", term)
+    m_mon = re.search(r"([〇零一二两三四五六七八九十百千\d]+)\s*个?\s*月", term)
+    if m_year:
+        years = _cn_simple_num_to_int(m_year.group(1)) or 0
+    if m_mon:
+        months = _cn_simple_num_to_int(m_mon.group(1)) or 0
+    if not m_year and not m_mon:
+        m2 = re.search(r"([〇零一二两三四五六七八九十百千\d]+)\s*月", term)
+        if m2:
+            months = _cn_simple_num_to_int(m2.group(1)) or 0
+    total = years * 12 + months
+    return total if total > 0 else None
+
+
+def _normalize_date_cn(s: str) -> Optional[str]:
+    """
+    将“YYYY年MM月DD日 / 二〇二五年九月二十九日”等转为 ISO (YYYY-MM-DD)。
+    不做闰月学术判断，仅做数值容错。
+    """
+
+    if not s:
+        return None
+    s = s.strip()
+    cn_map = {"〇":"0","零":"0","一":"1","二":"2","三":"3","四":"4","五":"5","六":"6","七":"7","八":"8","九":"9"}
+    s = ''.join(cn_map.get(ch, ch) for ch in s)
+    m = re.search(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日", s)
+    if not m:
+        return None
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        return datetime(y, mo, d).strftime("%Y-%m-%d")
+    except Exception:
         return None
 
-    total_months = 0
-    year_match = re.search(r"([\u4e00-\u9fa5〇零十两\d]+)年", term_str)
-    month_match = None
 
-    if year_match:
-        years = _parse_term_number(year_match.group(1))
-        if years > 0:
-            total_months += years * 12
-        after_year_idx = year_match.end()
-        if after_year_idx < len(term_str):
-            month_match = re.search(r"([\u4e00-\u9fa5〇零十两\d]+)个月", term_str[after_year_idx:])
-    else:
-        month_match = re.search(r"([\u4e00-\u9fa5〇零十两\d]+)个月", term_str)
+def _extract_section_by_names(chunks: List[Dict[str, Any]], names: List[str]) -> str:
+    """按 section 名称集合合并文本（适配你当前的中文分段命名）。"""
 
-    if month_match:
-        months = _parse_term_number(month_match.group(1))
-        if months > 0:
-            total_months += months
-
-    return total_months if total_months > 0 else None
+    buf = []
+    name_set = set(names)
+    for c in chunks:
+        if str(c.get("section", "")).strip() in name_set:
+            t = c.get("text") or ""
+            buf.append(t)
+    return "\n".join(buf).strip()
 
 
-def extract_roles_and_parties(intro_text: str) -> dict:
-    """
-    提取裁判文书引言部分的主体角色信息。
-    返回包含检察机关、检察员、被告人、辩护人等字段的字典。
-    """
+def _concat_fulltext(chunks: List[Dict[str, Any]]) -> str:
+    """按原顺序拼接全文 text。"""
 
-    roles = {
-        "procuratorate": None,
-        "prosecutors": [],
-        "defendants": [],
-        "lawyers": []
-    }
+    return "\n".join([c.get("text", "") for c in sorted(chunks, key=lambda x: x.get("chunk_index", 0))])
 
-    m = re.search(r"公诉机关[:：]\s*([^\n。；]+检察院)", intro_text)
-    if m:
-        roles["procuratorate"] = m.group(1).strip()
 
-    m = re.search(r"检察员[:：]?\s*([^\n。；]+)", intro_text)
-    if m:
-        pros_field = m.group(1).strip().rstrip('；。:')
-        pros_names = re.split(r"[、，和以及\s]+", pros_field)
-        roles["prosecutors"] = [name for name in pros_names if name]
+def _extract_procuratorate(intro: str) -> Optional[str]:
+    m = re.search(r"公诉机关(?:[:：]\s*)?([^\n。；]+?检察院)", intro)
+    return m.group(1).strip() if m else None
 
-    intro_segments = re.split(r'[。；]', intro_text)
-    for seg in intro_segments:
+
+def _extract_prosecutors(intro: str) -> List[str]:
+    m = re.search(r"检察员(?:[:：]?\s*)([\u4e00-\u9fa5·、，和以及 ]+?)(?:出庭|到庭|出席|参加)", intro)
+    if not m:
+        return []
+    raw = m.group(1).strip()
+    names = [x for x in re.split(r"[、，和以及\s]+", raw) if x]
+    return [n.replace("检察员", "").strip() for n in names if n]
+
+
+def _extract_lawyers(intro: str) -> List[Dict[str, str]]:
+    res = []
+    for m in re.finditer(r"(?:指定)?辩护人[:：]?\s*([^\n。；]+)", intro):
+        seg = m.group(1).strip()
+        parts = [p.strip() for p in re.split(r"[，、]", seg) if p.strip()]
+        if not parts:
+            continue
+        name = parts[0].replace("律师", "").strip()
+        firm = None
+        for p in parts[1:]:
+            if "律师事务所" in p or "法律援助" in p:
+                firm = p.replace("律师", "").strip()
+                break
+        if name:
+            res.append({"name": name, "firm": firm})
+    uniq = []
+    seen = set()
+    for x in res:
+        k = (x.get("name"), x.get("firm"))
+        if k not in seen:
+            uniq.append(x)
+            seen.add(k)
+    return uniq
+
+
+def _extract_defendants(intro: str) -> List[Dict[str, Any]]:
+    res = []
+    for seg in re.split(r"[。；\n]", intro):
         seg = seg.strip()
         if not seg or "被告人" not in seg:
             continue
-
-        name_match = re.search(r"被告人\s*([\u4e00-\u9fa5·]+)", seg)
-        if not name_match:
+        mname = re.search(r"被告人\s*([\u4e00-\u9fa5·]+)", seg)
+        if not mname:
             continue
-
-        name = name_match.group(1)
-        gender_match = re.search(r"，\s*(男|女)\s*，", seg)
-        gender = gender_match.group(1) if gender_match else None
-        dob_match = re.search(r"(\d{4}年\d{1,2}月\d{1,2}日)出生", seg)
-        dob = dob_match.group(1) if dob_match else None
-
-        address = None
-        addr_match = re.search(r"[，；]\s*(?:住址|住|户籍地|户籍所在地)[:：]?([^，；]+)", seg)
-        if addr_match:
-            address = addr_match.group(1).strip()
-
-        prior_convictions = None
-        prior_match = re.search(r"(曾因[^\n；。]*?判处[^\n；。]*?刑[^；。]*?|无前科)", seg)
-        if prior_match:
-            prior_text = prior_match.group(1).strip()
-            if prior_text != "无前科":
-                prior_convictions = prior_text
-
-        detention_date = None
-        det_match = re.search(r"于(\d{4}年\d{1,2}月\d{1,2}日)(?:[^。；]*?(?:拘留|逮捕|羁押))", seg)
-        if det_match:
-            detention_date = det_match.group(1)
-
-        defendant_info = {
-            "name": name,
+        name = mname.group(1).strip()
+        gender = (re.search(r"，\s*(男|女)\s*，", seg) or re.search(r"(男|女)[，、]", seg) or re.search(r"(男|女)$", seg))
+        gender = gender.group(1) if gender else None
+        dob = (re.search(r"(\d{4}年\d{1,2}月\d{1,2}日)\s*出生", seg) or re.search(r"生于\s*(\d{4}年\d{1,2}月\d{1,2}日)", seg))
+        dob = _normalize_date_cn(dob.group(1)) if dob else None
+        addr = None
+        madd = re.search(r"(?:住址|住|户籍地|户籍所在地)[:：]?([^，。；]+)", seg)
+        if madd:
+            addr = madd.group(1).strip()
+        priors = []
+        for pm in re.finditer(r"(因?犯[^\n。；]*?于\d{4}年\d{1,2}月\d{1,2}日[^\n。；]*?判处[^\n。；]*?(?:刑)?[^\n。；]*?)", seg):
+            priors.append(pm.group(1).strip())
+        detention = {}
+        for dm in re.finditer(r"于(\d{4}年\d{1,2}月\d{1,2}日)[^。；]*?(拘留|逮捕|羁押)", seg):
+            iso = _normalize_date_cn(dm.group(1))
+            kind = dm.group(2)
+            if kind == "拘留":
+                detention["detained"] = iso
+            elif kind == "逮捕":
+                detention["arrested"] = iso
+            else:
+                detention["custody"] = iso
+        res.append({
+            "name_masked": name,
+            "aka": None,
             "gender": gender,
             "dob": dob,
-            "address": address,
-            "prior_convictions": prior_convictions,
-            "detention_date": detention_date,
-            "sentence_term_months": None,
-            "sentence_term_desc": None,
-            "probation": False,
-            "fine": None,
-            "confiscation": None,
-            "detention_offset": False,
+            "address": addr,
+            "prior_convictions": priors or None,
+            "detention": detention or None,
+            "disposition": {
+                "offense": None,
+                "imprisonment_months": None,
+                "imprisonment_desc": None,
+                "fine_amount": None,
+                "confiscation_amount": None,
+                "detention_offset": False,
+                "term_start": None,
+                "term_end": None,
+                "probation": False
+            },
             "factors": {
                 "self_surrender": False,
                 "plead_guilty": False,
@@ -656,221 +744,211 @@ def extract_roles_and_parties(intro_text: str) -> dict:
                 "recidivist": False,
                 "confession": False
             }
-        }
-        roles["defendants"].append(defendant_info)
-
-    lawyer_segments = [m.group(1).strip() for m in re.finditer(r"辩护人[:：]\s*([^。\n；]+)", intro_text)]
-    for segment in lawyer_segments:
-        parts = segment.split('，')
-        for part in parts:
-            part = part.strip('；。 ')
-            if not part:
-                continue
-
-            name = None
-            firm = None
-            if '（' in part and '）' in part:
-                name, firm = part.split('（', 1)
-                firm = firm.split('）')[0]
-            elif '(' in part and ')' in part:
-                name, firm = part.split('(', 1)
-                firm = firm.split(')')[0]
-            else:
-                if '律师事务所' in part or '法律援助中心' in part:
-                    idx_law = part.find('律师事务所')
-                    idx_aid = part.find('法律援助中心')
-                    idx = idx_law if idx_law != -1 else idx_aid
-                    if idx != -1:
-                        name = part[:idx].strip()
-                        firm = part[idx:]
-
-            if not name or not firm:
-                continue
-
-            name = name.strip()
-            if name.endswith("律师"):
-                name = name[:-2]
-
-            firm = firm.strip()
-            if firm.endswith("律师"):
-                firm = firm[:-2]
-
-            lawyers_info = {"name": name, "firm": firm}
-            if lawyers_info not in roles["lawyers"]:
-                roles["lawyers"].append(lawyers_info)
-
-    return roles
+        })
+    return res
 
 
-def extract_verdict_fields(verdict_text: str, defendants: list) -> list:
-    """
-    从判决结果部分提取刑期、缓刑、罚金等量化信息，并填充到被告人列表。
-    """
+def _extract_verdict_blocks(text: str) -> str:
+    m = re.search(r"(判决如下|判决结果)\s*[:：]?", text)
+    if not m:
+        return ""
+    return text[m.end():].strip()
 
+
+def _parse_disposition(verdict_text: str, defendants: List[Dict[str, Any]]) -> None:
+    if not verdict_text:
+        return
+    segs = []
     lines = [ln.strip() for ln in verdict_text.splitlines() if ln.strip()]
-    segments = []
-
-    if any(line.startswith(("一、", "二、", "三、")) for line in lines):
-        current_seg = ""
-        for line in lines:
-            if re.match(r"^([一二三四五六七八九十]+)、", line):
-                if current_seg:
-                    segments.append(current_seg)
-                current_seg = line
+    cur = ""
+    for ln in lines:
+        if re.match(r"^[一二三四五六七八九十]+、", ln):
+            if cur:
+                segs.append(cur)
+                cur = ln
             else:
-                current_seg += line
-        if current_seg:
-            segments.append(current_seg)
-    else:
-        segments = ["".join(lines)]
-
-    for seg in segments:
-        seg = seg.strip()
-        if not seg:
-            continue
-
-        target_idxs = [idx for idx, def_info in enumerate(defendants) if def_info.get("name") and def_info["name"] in seg]
-        if not target_idxs:
+                cur = ln
+        else:
+            cur += (" " + ln)
+    if cur:
+        segs.append(cur)
+    if not segs:
+        segs = [" ".join(lines)]
+    for seg in segs:
+        idxs = []
+        for i, d in enumerate(defendants):
+            nm = d.get("name_masked") or ""
+            aka = d.get("aka") or ""
+            if nm and nm in seg or (aka and aka in seg):
+                idxs.append(i)
+        if not idxs:
             if len(defendants) == 1:
-                target_idxs = [0]
+                idxs = [0]
             else:
                 continue
-
-        sentence_desc = None
-        sentence_months = None
-
-        term_match = re.search(r"(有期徒刑|拘役|管制)([\u4e00-\u9fa5〇零十两\d年个月零\s]*)", seg)
-        if term_match:
-            term_str = term_match.group(2).strip().rstrip('，、；:')
-            if term_str:
-                sentence_desc = term_str
-                sentence_months = _chinese_term_to_months(term_str)
+        off = None
+        moff = re.search(r"犯?([^\s，。；、]*?罪)[，、]", seg)
+        if moff:
+            cand = moff.group(1).strip()
+            if not any(x in cand for x in ["有期徒刑","拘役","管制","罚金","追缴"]):
+                off = cand
+        impr_desc = None
+        impr_months = None
+        mterm = re.search(r"(有期徒刑|拘役|管制)([〇零一二两三四五六七八九十百千\d年月日天\s]*)", seg)
+        if mterm:
+            impr_desc = mterm.group(2).strip().rstrip("，、；。")
+            impr_months = _parse_term_to_months(impr_desc)
         else:
             if "无期徒刑" in seg:
-                sentence_desc = "无期徒刑"
+                impr_desc = "无期徒刑"
+            elif "死刑缓期" in seg:
+                impr_desc = "死刑缓期二年执行"
             elif "死刑" in seg:
-                sentence_desc = "死刑缓期二年执行" if "死刑缓期" in seg else "死刑"
-
-        probation_flag = "缓刑" in seg or "宣告缓刑" in seg
-
-        fine_amount = None
-        fine_match = re.search(r"罚金人民币?(\d+)\s*元", seg)
-        if fine_match:
-            fine_amount = int(fine_match.group(1))
-
-        confiscation_amount = None
-        conf_match = re.search(r"(?:违法所得)?人民币?(\d+)\s*元[^，。；]*?(?:追缴|没收)", seg)
-        if conf_match:
-            confiscation_amount = int(conf_match.group(1))
-
-        detention_offset_flag = bool(re.search(r"折抵刑期", seg))
-
-        for idx in target_idxs:
-            defendants[idx]["sentence_term_desc"] = sentence_desc
-            defendants[idx]["sentence_term_months"] = sentence_months
-            defendants[idx]["probation"] = probation_flag
-            defendants[idx]["fine"] = fine_amount
-            defendants[idx]["confiscation"] = confiscation_amount
-            defendants[idx]["detention_offset"] = detention_offset_flag
-
-    return defendants
-
-
-def extract_dispute_focus(opinion_text: str) -> list:
-    """提取“本院认为”段落中的争议焦点句子。"""
-
-    focus_list = []
-    sentences = [s.strip() for s in opinion_text.split('。') if s.strip()]
-    for sent in sentences:
-        if "焦点" in sent or "争议" in sent:
-            focus_list.append(sent + "。")
-        elif "辩护人" in sent and ("提出" in sent or "意见" in sent or "认为" in sent):
-            focus_list.append(sent + "。")
-
-    seen = set()
-    unique_focus = []
-    for sent in focus_list:
-        if sent not in seen:
-            seen.add(sent)
-            unique_focus.append(sent)
-    return unique_focus
+                impr_desc = "死刑"
+        probation = True if re.search(r"(宣告)?缓刑", seg) else False
+        fine = None
+        mf = re.search(r"罚金(?:人民币)?\s*([〇零一二两三四五六七八九十百千万亿\d]+)\s*元", seg)
+        if mf:
+            fine = _cn_simple_num_to_int(mf.group(1))
+        conf = None
+        mc = re.search(r"(?:违法所得)?(?:人民币)?\s*([〇零一二两三四五六七八九十百千万亿\d]+)\s*元[^，。；]*?(?:追缴|没收)", seg)
+        if mc:
+            conf = _cn_simple_num_to_int(mc.group(1))
+        offset = True if "折抵刑期" in seg else False
+        mrange = re.search(r"从(\d{4}年\d{1,2}月\d{1,2}日)起至(\d{4}年\d{1,2}月\d{1,2}日)止", seg)
+        term_start = _normalize_date_cn(mrange.group(1)) if mrange else None
+        term_end = _normalize_date_cn(mrange.group(2)) if mrange else None
+        for i in idxs:
+            d = defendants[i]
+            disp = d["disposition"]
+            disp.update({
+                "offense": off or disp.get("offense"),
+                "imprisonment_desc": impr_desc or disp.get("imprisonment_desc"),
+                "imprisonment_months": impr_months if impr_months is not None else disp.get("imprisonment_months"),
+                "fine_amount": fine if fine is not None else disp.get("fine_amount"),
+                "confiscation_amount": conf if conf is not None else disp.get("confiscation_amount"),
+                "detention_offset": offset or disp.get("detention_offset", False),
+                "term_start": term_start or disp.get("term_start"),
+                "term_end": term_end or disp.get("term_end"),
+                "probation": probation or disp.get("probation", False)
+            })
 
 
-def extract_factors(opinion_text: str, defendants: list) -> list:
-    """
-    根据“本院认为”部分判断被告人是否具有自首、认罪认罚等情节。
-    """
-
-    sentences = [s.strip() for s in opinion_text.split('。') if s.strip()]
-    for sent in sentences:
-        involved_idxs = [idx for idx, def_info in enumerate(defendants) if def_info.get("name") and def_info["name"] in sent]
-
-        if not involved_idxs and len(defendants) > 1 and re.search(r"(两被告人|各被告人|被告人均)", sent):
-            involved_idxs = list(range(len(defendants)))
-
-        if not involved_idxs and len(defendants) == 1:
-            involved_idxs = [0]
-
-        factor_keywords = {
-            "self_surrender": "自首",
-            "plead_guilty": "认罪认罚",
-            "accessory": "从犯",
-            "recidivist": "累犯",
-            "confession": "坦白"
-        }
-
-        for key, word in factor_keywords.items():
+def _fill_factors(opinion: str, defendants: List[Dict[str, Any]]) -> None:
+    if not opinion:
+        return
+    sents = [s.strip() for s in re.split(r"[。！？]", opinion) if s.strip()]
+    keys = {
+        "self_surrender": "自首",
+        "plead_guilty": "认罪认罚",
+        "accessory": "从犯",
+        "recidivist": "累犯",
+        "confession": "坦白"
+    }
+    for sent in sents:
+        idxs = []
+        for i, d in enumerate(defendants):
+            nm = d.get("name_masked") or ""
+            aka = d.get("aka") or ""
+            if (nm and nm in sent) or (aka and aka in sent):
+                idxs.append(i)
+        if not idxs:
+            if len(defendants) == 1 or re.search(r"(两|各|诸)被告人.*(均|皆)", sent):
+                idxs = list(range(len(defendants)))
+        for k, word in keys.items():
             if word in sent:
-                neg = bool(re.search(r"不(?:构成|属于).*?" + word, sent) or re.search(r"(未|没有).*?" + word, sent))
-                for idx in involved_idxs:
-                    defendants[idx]["factors"][key] = False if neg else True
-
-    return defendants
+                neg = bool(re.search(r"(不(构成|属于)|未|没有|不予采信).{0,6}" + word, sent))
+                for i in idxs:
+                    defendants[i]["factors"][k] = (False if neg else True)
 
 
-def extract_judgment_info(doc_text: str) -> dict:
-    """
-    主函数：提取裁判文书的深度结构化信息。
-    """
+def _extract_dispute_focus(opinion: str, defense: str) -> List[str]:
+    cand = []
+    pool = "。".join([opinion or "", defense or ""])
+    for s in [x.strip() for x in pool.split("。") if x.strip()]:
+        if any(k in s for k in ["焦点","争议","辩护人", "是否", "不予采信"]):
+            if ("自首" in s) or ("辩护" in s) or ("争议" in s) or ("焦点" in s):
+                cand.append(s + "。")
+    out, seen = [], set()
+    for s in cand:
+        if s not in seen:
+            out.append(s)
+            seen.add(s)
+    return out[:5]
 
-    result = {}
-    intro_text = doc_text
-    opinion_text = ""
-    verdict_text = ""
 
-    opinion_pos = doc_text.find("本院认为")
-    if opinion_pos != -1:
-        intro_text = doc_text[:opinion_pos]
-        opinion_text = doc_text[opinion_pos:]
-        verdict_pos = re.search(r"判决如下|判决结果", opinion_text)
-        if verdict_pos:
-            verdict_index = verdict_pos.start()
-            verdict_text = opinion_text[verdict_index:]
-            opinion_text = opinion_text[:verdict_index]
-    else:
-        verdict_pos = doc_text.find("判决如下")
-        if verdict_pos != -1:
-            intro_text = doc_text[:verdict_pos]
-            verdict_text = doc_text[verdict_pos:]
+def _opinion_summary(opinion: str, topk: int = 3) -> List[str]:
+    if not opinion:
+        return []
+    sents = [s.strip() for s in re.split(r"[。！？]", opinion) if s.strip()]
+    if not sents:
+        return []
+    kw = {
+        "本院认为": 3, "依法": 2, "从重": 1, "从轻": 1, "减轻": 1,
+        "构成": 1, "证据": 1, "事实": 1, "情节": 1, "危害": 1,
+        "认定": 1, "系从犯": 2, "认罪认罚": 2, "自首": 2, "坦白": 1
+    }
+    scores = []
+    for s in sents:
+        sc = sum(v for k, v in kw.items() if k in s)
+        scores.append((sc, s))
+    scores.sort(key=lambda x: (-x[0], len(x[1])))
+    picked = [scores[0][1]]
+    for sc, s in scores[1:]:
+        if len(picked) >= topk:
+            break
+        if s not in picked:
+            picked.append(s)
+    return [p + "。" for p in picked]
 
-    find_idx = re.search(r"查明|指控", intro_text)
-    if find_idx:
-        intro_text = intro_text[:find_idx.start()]
 
-    roles = extract_roles_and_parties(intro_text)
+def _fill_aka(fulltext: str, defendants: List[Dict[str, Any]]) -> None:
+    for d in defendants:
+        masked = d.get("name_masked")
+        if not masked or len(masked) < 2:
+            continue
+        surname = masked[0]
+        m = re.search(rf"{surname}[\u4e00-\u9fa5]{{1,2}}", fulltext)
+        if m and m.group(0) != masked:
+            d["aka"] = m.group(0)
 
-    if verdict_text:
-        roles["defendants"] = extract_verdict_fields(verdict_text, roles["defendants"])
 
-    dispute_focus_list = []
-    if opinion_text:
-        dispute_focus_list = extract_dispute_focus(opinion_text)
-        roles["defendants"] = extract_factors(opinion_text, roles["defendants"])
+def deep_extract_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    intro = _extract_section_by_names(chunks, ["开头","案号行","当事人信息","审理经过"])
+    defense = _extract_section_by_names(chunks, ["被告人辩解与辩护意见","辩护意见"])
+    opinion = _extract_section_by_names(chunks, ["理由","本院认为"])
+    tail = _extract_section_by_names(chunks, ["主文","结果","判决结果","尾部"])
+    full = _concat_fulltext(chunks)
+    proc = _extract_procuratorate(intro)
+    pros = _extract_prosecutors(intro)
+    lawyers = _extract_lawyers(intro)
+    defendants = _extract_defendants(intro)
+    _fill_aka(full, defendants)
+    verdict_zone = _extract_verdict_blocks(opinion + "\n" + tail)
+    _parse_disposition(verdict_zone, defendants)
+    _fill_factors(opinion, defendants)
+    focus = _extract_dispute_focus(opinion, defense)
+    op_sum = _opinion_summary(opinion, topk=3)
+    return {
+        "procuratorate": proc,
+        "prosecutors": pros,
+        "defendants": defendants,
+        "lawyers": lawyers,
+        "dispute_focus": focus,
+        "opinion_summary": op_sum
+    }
 
-    result.update(roles)
-    result["dispute_focus"] = dispute_focus_list
-    return result
 
+def attach_doc_info(chunks: List[Dict[str, Any]], doc_info: Dict[str, Any], mode: str = "first") -> List[Dict[str, Any]]:
+    if not chunks:
+        return chunks
+    if mode == "first":
+        chunks[0]["judgment_info"] = doc_info
+        return chunks
+    for c in chunks:
+        c["judgment_info"] = doc_info
+    return chunks
+# ===== 以上为新增/替换部分 =====
 # ---------- 分段（锚点+兜底） ----------
 GEN_STRONG = [
     ("标题", r"^(?:刑事|民事|行政|执行|国家赔偿)?(?:判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)$"),
@@ -1391,7 +1469,8 @@ def aggregate_chunks(sections, min_chars=700, max_chars=1200, overlap=120):
         for txt in pieces:
             all_chunks.append({
                 "text": txt,
-                "section_span": sec_name
+                "section_span": sec_name,
+                "section": sec_name
             })
     return all_chunks
 
@@ -1471,7 +1550,6 @@ def process_one_file(root_dir, out_dir, path, min_chars, max_chars, overlap):
 
     text = normalize_text(raw)
     meta = extract_light_meta(text, path)
-    deep_info = extract_judgment_info(text)
     system, subtype = infer_case_system_and_subtype(root_dir, path)
 
     if not system:
@@ -1488,6 +1566,12 @@ def process_one_file(root_dir, out_dir, path, min_chars, max_chars, overlap):
 
     sections = split_sections(text)
     chunks = aggregate_chunks(sections, min_chars, max_chars, overlap)
+    for idx, c in enumerate(chunks):
+        c["chunk_index"] = idx
+        if "section" not in c:
+            c["section"] = c.get("section_span")
+    doc_info = deep_extract_from_chunks(chunks)
+    chunks = attach_doc_info(chunks, doc_info, mode="all")
 
     rel_path = os.path.relpath(path, root_dir).replace("\\","/")
     out_path = os.path.join(out_dir, os.path.splitext(rel_path)[0] + ".jsonl")
@@ -1507,8 +1591,8 @@ def process_one_file(root_dir, out_dir, path, min_chars, max_chars, overlap):
                 "case_number": meta["case_number"],
                 "judgment_date": meta["judgment_date"],
                 "statutes": meta["statutes"],
-                "judgment_info": deep_info,
-                "section": c["section_span"],
+                "judgment_info": c.get("judgment_info", doc_info),
+                "section": c.get("section", c["section_span"]),
                 "chunk_index": i,
                 "text": c["text"]
             }
