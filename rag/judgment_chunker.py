@@ -574,9 +574,15 @@ SYS_STRONG = {
     ],
 }
 
-PARTY_HEAD = re.compile(
-    r"^(?:上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|被执行人|申请执行人|案外人|法定代表人|代理人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码|公民身份号码)[：:]"
+PARTY_ROLE_PATTERN = (
+    "上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|"
+    "被执行人|申请执行人|案外人|法定代表人|代理人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码|公民身份号码"
 )
+
+PARTY_HEAD_PATTERN = rf"^(?:{PARTY_ROLE_PATTERN})(?:[（(][^：:（）()]{{0,30}}[）)])*\s*[：:]"
+
+PARTY_HEAD = re.compile(PARTY_HEAD_PATTERN)
+PARTY_HEAD_IN_TEXT = re.compile(PARTY_HEAD_PATTERN, re.M)
 
 PARTY_BLOCK_STOP_TOKENS = [
     "本院于", "受理后", "依法组成合议庭", "公开开庭审理", "本案现已审理终结", "审理经过", "原审法院", "一审法院",
@@ -839,7 +845,7 @@ def _post_split_fixup(sections):
             continue
 
         if nm == "案号行":
-            m1 = re.search(r"(?m)^(?:上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|被执行人|申请执行人|案外人|法定代表人|代理人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)[：:]", tx)
+            m1 = PARTY_HEAD_IN_TEXT.search(tx)
             if m1:
                 head_part = tx[:m1.start()].strip()
                 rest = tx[m1.start():].strip()
