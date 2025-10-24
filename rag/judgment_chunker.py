@@ -382,76 +382,134 @@ def extract_light_meta(text: str, file_path: str = ""):
     }
 
 # ---------- 分段（锚点+兜底） ----------
-SECTION_PATTERNS = [
+GEN_STRONG = [
     ("标题", r"^(?:刑事|民事|行政|执行|国家赔偿)?(?:判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)$"),
     ("案号行", r"^\s*[（(]\d{4}[）)][^号\n]{0,40}号\s*$"),
-
-    # 当事人开头（行政、民行通用）
-    ("当事人信息", r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|法定代表人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)"),
-
-    # “原审/一审判决如下”要先于“主文”命中，避免误把原审主文当成本审主文
-    ("一审判决", r"^(原审|一审)(法院)?(判决|裁定|决定)[^。\n]{0,10}[:：]?$|^(原审|一审)[^。\n]{0,40}(判决如下|裁定如下|决定如下)"),
-
-    ("一审查明", r"^(一审法院|原审法院)(认定事实|查明|认为)[:：]?$"),
-    ("一审认为", r"^(一审法院认为|原审法院认为)[:：]?$"),
-
-    # “争议焦点”常见两种写法
-    ("二审争议焦点", r"^(本案)?二审[^\n]{0,6}争议焦点[:：]?$"),
-    ("争议焦点",   r"^(本案)?争议焦点[:：]?$"),
-
-    # “审理经过”经常出现在句中（受理后/立案后/依法组成合议庭/公开开庭/审理终结）
-    ("审理经过", r"(本院(?:于.*?受理后|受理后)|依法组成合议庭|公开开庭审理|审理经过|本案现已审理终结)"),
-
-    ("原审情况", r"(原审法院|一审法院).{0,12}作出[（(]\d{4}[）)].{0,80}(判决|裁定)"),
-
-    # 查明/理由/依据/主文/尾部
-    ("查明", r"^(经审理查明|本院查明|查明事实|案件基本事实)"),
-    ("理由", r"^(本院(经审理|经审查)?认为|法院认为|合议庭认为|本院意见|判决理由)"),
-    ("依据", r"^(依照|根据)[^。\n]{0,80}"),
-    ("主文", r"^(裁判主文|判决如下|裁定如下|决定如下)"),
-    ("尾部", r"^(审判长|审判员|人民陪审员|书记员|本判决为终审判决|本裁定为终审裁定)"),
+    ("主文",   r"^(裁判主文|判决如下|裁定如下|决定如下)\s*$"),
+    ("依据",   r"^(?:依照|根据)[^。\n]{0,80}$"),
+    ("理由",   r"^(?:本院(?:经审理|经审查)?认为|法院认为|合议庭认为|本院意见|判决理由)\s*$"),
+    ("查明",   r"^(?:经审理查明|本院查明|案件基本事实|查明事实)\s*$"),
+    ("尾部",   r"^(?:审判长|审判员|人民陪审员|书记员|本判决为终审判决|本裁定为终审裁定)"),
+    ("一审判决", r"^(?:原审|一审)(?:法院)?(?:判决|裁定|决定)[^。\n]{0,10}[:：]?$|^(?:原审|一审)[^。\n]{0,40}(?:判决如下|裁定如下|决定如下)"),
+    ("一审查明", r"^(?:一审法院|原审法院)(?:认定事实|查明|认为)[:：]?$"),
+    ("一审认为", r"^(?:一审法院认为|原审法院认为)[:：]?$"),
+    ("二审争议焦点", r"^(?:本案)?二审[^\n]{0,6}争议焦点[:：]?$"),
+    ("争议焦点",     r"^(?:本案)?争议焦点[:：]?$"),
 ]
 
-SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS if pat]
+GEN_WEAK = [
+    ("审理经过", r"(?:本院(?:于.*?受理后|受理后)|依法组成合议庭|公开开庭审理|审理经过|本案现已审理终结)"),
+    ("原审情况", r"(?:原审法院|一审法院).{0,12}作出[（(]\d{4}[）)].{0,80}(?:判决|裁定)"),
+]
 
-TITLE_TIGHT_RE = re.compile(SECTION_PATTERNS[0][1])
-
-WEAK_SECTION = {"审理经过", "原审情况"}
+SYS_STRONG = {
+    "民事": [
+        ("诉讼请求", r"^(?:诉讼请求|上诉请求|反诉请求)[:：]?$"),
+        ("答辩意见", r"^(?:答辩|辩称|抗辩|异议)[^。\n]{0,8}[:：]?$"),
+        ("证据",     r"^(?:证据(?:清单|目录)?|证据与理由|证据采信意见)[:：]?$"),
+    ],
+    "刑事": [
+        ("起诉书指控", r"^(?:起诉书指控|公诉机关指控|检察机关指控)[:：]?$"),
+        ("被告人辩解与辩护意见", r"^(?:被告人(?:供述与)?辩解|辩护人意见|辩护意见)[:：]?$"),
+        ("证据", r"^(?:证人证言|书证|鉴定意见|勘验检查笔录|辨认笔录|电子数据|证据(?:综合)?分析)[:：]?$"),
+    ],
+    "行政": [
+        ("被诉行政行为", r"^(?:被诉行政行为|被诉具体行政行为|行政行为概况)[:：]?$"),
+        ("复议决定",     r"^(?:行政复议决定|复议情况|复议结论)[:：]?$"),
+        ("诉辩主张",     r"^(?:上诉人|原告|被告|被上诉人|第三人).{0,6}(?:诉称|主张|辩称|意见)[:：]?$"),
+        ("证据",         r"^(?:证据|证据与采信|证据证明力评判)[:：]?$"),
+    ],
+    "国家赔偿": [
+        ("赔偿请求", r"^(?:赔偿请求|申请赔偿事项)[:：]?$"),
+        ("赔偿决定依据", r"^(?:赔偿数额计算|赔偿项目|赔偿决定理由)[:：]?$"),
+    ],
+    "执行": [
+        ("执行当事人", r"^(?:申请执行人|被执行人|案外人)[：:]"),
+        ("执行经过",   r"^(?:执行经过|执行查明|执行情况)[:：]?$"),
+        ("执行异议",   r"^(?:执行异议|案外人执行异议|复议请求)[:：]?$"),
+    ],
+}
 
 PARTY_HEAD = re.compile(
-    r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|法定代表人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)"
+    r"^(?:上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|被执行人|申请执行人|案外人|法定代表人|代理人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码|公民身份号码)[：:]"
 )
 
-PARTY_BLOCK_STOP = {"审理经过", "原审情况", "查明", "理由", "依据", "主文", "一审判决", "一审查明", "一审认为"}
+PARTY_BLOCK_STOP_TOKENS = [
+    "本院于", "受理后", "依法组成合议庭", "公开开庭审理", "本案现已审理终结", "审理经过", "原审法院", "一审法院",
+    "诉讼请求", "上诉请求", "反诉请求", "答辩", "辩称", "抗辩", "意见", "诉辩主张", "赔偿请求",
+    "被诉行政行为", "行政处罚决定", "行政复议决定", "复议决定", "复议情况",
+    "起诉书指控", "公诉机关指控", "检察机关指控", "被告人辩解", "辩护意见",
+    "经审理查明", "本院查明", "案件基本事实", "证据", "证人证言", "鉴定意见",
+    "本院认为", "法院认为", "合议庭认为", "判决理由",
+    "裁判主文", "判决如下", "裁定如下", "决定如下", "依照", "根据",
+]
+
+PARTY_BLOCK_STOP = set(["审理经过","原审情况","查明","一审查明","一审认为","理由","依据","主文"])
+
+WEAK_SECTION = {"审理经过","原审情况"}
+
+SECTION_PATTERNS = GEN_STRONG + GEN_WEAK
+
+TITLE_TIGHT_RE = re.compile(GEN_STRONG[0][1])
 
 
-def _match_section_name(raw: str):
+def _select_sys_patterns(system: str):
+    pats = []
+    for nm, rx in SYS_STRONG.get(system or "", []):
+        pats.append((nm, re.compile(rx)))
+    return pats
+
+
+def _match_section_name(raw: str, system: str = ""):
     s = raw.strip()
     if not s:
         return None
     tight = re.sub(r"[\s\u3000]+", "", s)
     if TITLE_TIGHT_RE.match(tight):
         return "标题"
-    for name, pat in SEC_COMPILED:
-        if name == "标题":
-            continue
-        if name in WEAK_SECTION:
-            m = pat.search(s)
-            if m and s.find(m.group(0)) <= 12:
-                return name
-        else:
-            if pat.match(s):
-                return name
+
+    for nm, pat in _select_sys_patterns(system):
+        if pat.match(s):
+            return nm
+
+    for name, pat in [(n, re.compile(p)) for n, p in GEN_STRONG if n != "标题"]:
+        if pat.match(s):
+            return name
+
+    for name, pat in [(n, re.compile(p)) for n, p in GEN_WEAK]:
+        m = pat.search(s)
+        if m and s.find(m.group(0)) <= 12:
+            return name
+
     return None
 
-def split_sections(text: str):
+
+def _should_stop_party(line: str) -> bool:
+    if _match_section_name(line):
+        return True
+    plain = re.sub(r"\s+", "", line)
+    return any(tok in plain for tok in PARTY_BLOCK_STOP_TOKENS)
+
+
+def split_sections(text: str, system_hint: str = ""):
+    sys = (system_hint or "").strip()
+    if not sys:
+        head = text[:1000]
+        if "执行" in head: sys = "执行"
+        elif "国家赔偿" in head or "赔偿决定书" in head: sys = "国家赔偿"
+        elif "行政" in head: sys = "行政"
+        elif "刑事" in head: sys = "刑事"
+        else: sys = "民事"
+
     lines = text.splitlines()
     markers = []
     seen_case_no = False
+
     for i, raw in enumerate(lines):
-        name = _match_section_name(raw)
+        name = _match_section_name(raw, system=sys)
+
         if name == "案号行":
-            if seen_case_no or i > 20:
+            if seen_case_no or i > 30:
                 name = None
             else:
                 seen_case_no = True
@@ -460,84 +518,49 @@ def split_sections(text: str):
             name = "一审判决"
 
         if name:
-            if name == "当事人信息" and markers and markers[-1][1] == "当事人信息":
-                continue
             markers.append((i, name))
 
-    existing_party_lines = {ln for ln, nm in markers if nm == "当事人信息"}
-    i = 0
-    total_lines = len(lines)
-    while i < total_lines:
-        stripped = lines[i].strip()
-        if PARTY_HEAD.match(stripped):
+    existing_party_starts = {ln for ln, nm in markers if nm == "当事人信息"}
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i].strip()
+        if PARTY_HEAD.match(line):
             start = i
             j = i + 1
-            while j < total_lines:
+            while j < n:
                 cur = lines[j].strip()
                 if PARTY_HEAD.match(cur):
                     j += 1
                     continue
-                next_name = _match_section_name(cur)
-                if next_name in PARTY_BLOCK_STOP:
-                    break
                 if not cur:
-                    if j + 1 < total_lines and PARTY_HEAD.match(lines[j + 1].strip()):
+                    if j + 1 < n and PARTY_HEAD.match(lines[j+1].strip()):
                         j += 1
                         continue
                     break
+                if _should_stop_party(cur):
+                    break
                 j += 1
-            if start not in existing_party_lines:
+            if start not in existing_party_starts:
                 markers.append((start, "当事人信息"))
-                existing_party_lines.add(start)
+                existing_party_starts.add(start)
             i = j
             continue
         i += 1
 
-    if any(n == "案号行" for _, n in markers) and not any(n == "当事人信息" for _, n in markers):
-        start = next(ln for ln, n in markers if n == "案号行")
-        lim = min(len(lines), start + 50)
+    if any(nm == "案号行" for _, nm in markers) and not any(nm == "当事人信息" for _, nm in markers):
+        start = next(ln for ln, nm in markers if nm == "案号行")
+        lim = min(len(lines), start + 60)
         for j in range(start+1, lim):
             if PARTY_HEAD.match(lines[j].strip()):
                 markers.append((j, "当事人信息"))
-                markers.sort()
                 break
 
-    markers.sort()
-
-    if len(markers) < 2 or {name for _, name in markers} == {"案号行"}:
+    if not markers:
         parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-        if len(parts) <= 1:
-            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-            if not lines:
-                return []
-            header, body = [], []
-            for idx, line in enumerate(lines):
-                header.append(line)
-                collapsed = _clean_spaces(line)
-                if any(token in collapsed for token in ["判决书","裁定书","决定书","调解书","赔偿决定书","赔偿监督审查决定书"]):
-                    body = lines[idx+1:]
-                    break
-                if idx >= 2:
-                    body = lines[idx+1:]
-                    break
-            else:
-                body = []
-            sections = []
-            if header:
-                sections.append({"name": "标题", "text": "\n".join(header).strip()})
-            if body:
-                sections.append({"name": "正文", "text": "\n".join(body).strip()})
-            return _post_split_fixup(sections if sections else [{"name": "正文", "text": text.strip()}])
-        sections = []
-        first = parts[0]
-        if any(token in _clean_spaces(first) for token in ["判决书","裁定书","决定书","调解书","赔偿决定书","赔偿监督审查决定书"]):
-            sections.append({"name": "标题", "text": first})
-            for idx, p in enumerate(parts[1:], start=1):
-                sections.append({"name": f"段落{idx}", "text": p})
-        else:
-            for idx, p in enumerate(parts, start=1):
-                sections.append({"name": f"段落{idx}", "text": p})
-        return _post_split_fixup(sections)
+        return [{"name": "正文", "text": p} for p in parts]
+
+    markers = sorted(set(markers))
+
     sections = []
     for idx, (ln, name) in enumerate(markers):
         if idx == 0 and ln > 0:
@@ -552,43 +575,43 @@ def split_sections(text: str):
             tail = "\n".join(lines[end:]).strip()
             if tail:
                 sections.append({"name": "结尾", "text": tail})
+
     return _post_split_fixup(sections)
 
 
 def _post_split_fixup(sections):
     fixed = []
     for sec in sections:
-        if sec.get("name") == "案号行":
-            t = (sec.get("text") or "").strip()
-            if not t:
-                continue
-            rest = t
-            m1 = re.search(
-                r"(?m)^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|法定代表人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)",
-                rest,
-            )
-            had_split = False
+        nm = sec.get("name")
+        tx = (sec.get("text") or "").strip()
+        if not tx:
+            continue
+
+        if nm == "案号行":
+            m1 = re.search(r"(?m)^(?:上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|被执行人|申请执行人|案外人|法定代表人|代理人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)[：:]", tx)
             if m1:
-                head_part = rest[:m1.start()].strip()
+                head_part = tx[:m1.start()].strip()
+                rest = tx[m1.start():].strip()
                 if head_part:
                     fixed.append({"name": "案号行", "text": head_part})
-                rest = rest[m1.start():].strip()
-                had_split = True
-            m2 = re.search(r"(本院受理后|依法组成合议庭|公开开庭审理|本案现已审理终结|原审法院.{0,12}作出[（(]\d{4}[）)])", rest)
-            if m2:
-                party_part = rest[:m2.start()].strip()
-                trial_part = rest[m2.start():].strip()
-                if party_part:
-                    fixed.append({"name": "当事人信息", "text": party_part})
-                if trial_part:
-                    fixed.append({"name": "审理经过", "text": trial_part})
-                continue
-            if had_split:
-                if rest:
-                    fixed.append({"name": "当事人信息", "text": rest})
-                continue
-        fixed.append(sec)
-    return [s for s in fixed if s.get("text")]
+                m2 = re.search(r"(本院于|受理后|依法组成合议庭|公开开庭审理|本案现已审理终结|原审法院.{0,12}作出[（(]\d{4}[）)])", rest)
+                if m2:
+                    party_part = rest[:m2.start()].strip()
+                    trial_part = rest[m2.start():].strip()
+                    if party_part:
+                        fixed.append({"name": "当事人信息", "text": party_part})
+                    if trial_part:
+                        fixed.append({"name": "审理经过", "text": trial_part})
+                    continue
+                else:
+                    if rest:
+                        fixed.append({"name": "当事人信息", "text": rest})
+                    continue
+
+        fixed.append({"name": nm, "text": tx})
+
+    return fixed
+
 
 def gentle_split_long_block(s: str, hard_limit=1600, target=900):
     s = s.strip()
