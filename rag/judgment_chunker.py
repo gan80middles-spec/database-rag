@@ -382,13 +382,22 @@ def detect_judgment_date(text: str) -> str:
     _, year, month, day = best
     return f"{year:04d}-{month:02d}-{day:02d}"
 
+def _fix_broken_statute_spans(text: str) -> str:
+    # 书名号内断行 → 连起来
+    t = re.sub(r"《\s*([^》\n]{1,40})\s*》", r"《\1》", text)
+    t = re.sub(r"《([^》\n]{1,20})\n+([^》\n]{1,20})》", r"《\1\2》", t)
+    # “第…条”被换行拆开
+    t = re.sub(r"第\s*([一二三四五六七八九十百千0-9]+)\s*条", r"第\1条", t)
+    return t
+
 def extract_light_meta(text: str, file_path: str = ""):
     head = text[:4000]
     m_case_no = RE_CASE_NO.search(head)
     court = _detect_court(text)
     doc_type  = detect_doc_type(text, file_path)
     trial     = detect_trial_level(text, m_case_no.group(0) if m_case_no else "")
-    statutes  = list(dict.fromkeys([x.group(0) for x in RE_STATUTE.finditer(text)]))[:50]
+    clean_for_statute = _fix_broken_statute_spans(text)
+    statutes  = list(dict.fromkeys([x.group(0) for x in RE_STATUTE.finditer(clean_for_statute)]))[:50]
     return {
         "case_number": m_case_no.group(0) if m_case_no else "",
         "court": court.strip() if court else "",
@@ -400,11 +409,11 @@ def extract_light_meta(text: str, file_path: str = ""):
 
 # ---------- 分段（锚点+兜底） ----------
 SECTION_PATTERNS = [
-    ("标题", r"[\u4e00-\u9fa5A-Za-z0-9（）()〔〕【】\-.]{2,30}(判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)\s*$"),
+    ("标题", r"^(?:刑事|民事|行政|执行|国家赔偿)?(?:判决书|裁定书|决定书|调解书|赔偿决定书|赔偿监督审查决定书)$"),
     ("案号行", r"^\s*[（(]\d{4}[）)][^号\n]{0,40}号\s*$"),
 
     # 当事人开头（行政、民行通用）
-    ("当事人信息", r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)"),
+    ("当事人信息", r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|法定代表人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)"),
 
     # “原审/一审判决如下”要先于“主文”命中，避免误把原审主文当成本审主文
     ("一审判决", r"^(原审|一审)(法院)?(判决|裁定|决定)[^。\n]{0,10}[:：]?$|^(原审|一审)[^。\n]{0,40}(判决如下|裁定如下|决定如下)"),
@@ -417,8 +426,9 @@ SECTION_PATTERNS = [
     ("争议焦点",   r"^(本案)?争议焦点[:：]?$"),
 
     # “审理经过”经常出现在句中（受理后/立案后/依法组成合议庭/公开开庭/审理终结）
-    # 这里不加 ^，交给 LOOSE 搜索
-    ("审理经过", r"(本院于.*?(立案|受理)后|依法组成合议庭|公开开庭审理|现已审理终结|经本院审理)"),
+    ("审理经过", r"(本院(?:于.*?受理后|受理后)|依法组成合议庭|公开开庭审理|审理经过|本案现已审理终结)"),
+
+    ("原审情况", r"(原审法院|一审法院).{0,12}作出[（(]\d{4}[）)].{0,80}(判决|裁定)"),
 
     # 查明/理由/依据/主文/尾部
     ("查明", r"^(经审理查明|本院查明|查明事实|案件基本事实)"),
@@ -428,24 +438,36 @@ SECTION_PATTERNS = [
     ("尾部", r"^(审判长|审判员|人民陪审员|书记员|本判决为终审判决|本裁定为终审裁定)"),
 ]
 
-SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS]
+SEC_COMPILED = [(name, re.compile(pat)) for name, pat in SECTION_PATTERNS if pat]
 
-# 哪些属于“弱锚点”，允许出现在行中（用 search）
-LOOSE_NAMES = {"审理经过"}  # 也可按需加入少量易出现在句中的标题
+TITLE_TIGHT_RE = re.compile(SECTION_PATTERNS[0][1])
+
+WEAK_SECTION = {"审理经过", "原审情况"}
+
+PARTY_HEAD = re.compile(
+    r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|法定代表人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)"
+)
+
+PARTY_BLOCK_STOP = {"审理经过", "原审情况", "查明", "理由", "依据", "主文", "一审判决", "一审查明", "一审认为"}
 
 
 def _match_section_name(raw: str):
     s = raw.strip()
     if not s:
         return None
-    # 先强锚：行首匹配
+    tight = re.sub(r"[\s\u3000]+", "", s)
+    if TITLE_TIGHT_RE.match(tight):
+        return "标题"
     for name, pat in SEC_COMPILED:
-        if pat.match(s):
-            return name
-    # 再弱锚：少数标题允许行中出现
-    for name, pat in SEC_COMPILED:
-        if name in LOOSE_NAMES and pat.search(s):
-            return name
+        if name == "标题":
+            continue
+        if name in WEAK_SECTION:
+            m = pat.search(s)
+            if m and s.find(m.group(0)) <= 12:
+                return name
+        else:
+            if pat.match(s):
+                return name
     return None
 
 def split_sections(text: str):
@@ -464,18 +486,50 @@ def split_sections(text: str):
             name = "一审判决"
 
         if name:
+            if name == "当事人信息" and markers and markers[-1][1] == "当事人信息":
+                continue
             markers.append((i, name))
+
+    existing_party_lines = {ln for ln, nm in markers if nm == "当事人信息"}
+    i = 0
+    total_lines = len(lines)
+    while i < total_lines:
+        stripped = lines[i].strip()
+        if PARTY_HEAD.match(stripped):
+            start = i
+            j = i + 1
+            while j < total_lines:
+                cur = lines[j].strip()
+                if PARTY_HEAD.match(cur):
+                    j += 1
+                    continue
+                next_name = _match_section_name(cur)
+                if next_name in PARTY_BLOCK_STOP:
+                    break
+                if not cur:
+                    if j + 1 < total_lines and PARTY_HEAD.match(lines[j + 1].strip()):
+                        j += 1
+                        continue
+                    break
+                j += 1
+            if start not in existing_party_lines:
+                markers.append((start, "当事人信息"))
+                existing_party_lines.add(start)
+            i = j
+            continue
+        i += 1
 
     if any(n == "案号行" for _, n in markers) and not any(n == "当事人信息" for _, n in markers):
         start = next(ln for ln, n in markers if n == "案号行")
         lim = min(len(lines), start + 50)
-        rx_party = re.compile(r"^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|委托诉讼代理人)")
         for j in range(start+1, lim):
-            if rx_party.match(lines[j].strip()):
+            if PARTY_HEAD.match(lines[j].strip()):
                 markers.append((j, "当事人信息"))
                 markers.sort()
                 break
-            
+
+    markers.sort()
+
     if len(markers) < 2 or {name for _, name in markers} == {"案号行"}:
         parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
         if len(parts) <= 1:
@@ -499,7 +553,7 @@ def split_sections(text: str):
                 sections.append({"name": "标题", "text": "\n".join(header).strip()})
             if body:
                 sections.append({"name": "正文", "text": "\n".join(body).strip()})
-            return sections if sections else [{"name": "正文", "text": text.strip()}]
+            return _post_split_fixup(sections if sections else [{"name": "正文", "text": text.strip()}])
         sections = []
         first = parts[0]
         if any(token in _clean_spaces(first) for token in ["判决书","裁定书","决定书","调解书","赔偿决定书","赔偿监督审查决定书"]):
@@ -509,7 +563,7 @@ def split_sections(text: str):
         else:
             for idx, p in enumerate(parts, start=1):
                 sections.append({"name": f"段落{idx}", "text": p})
-        return sections
+        return _post_split_fixup(sections)
     sections = []
     for idx, (ln, name) in enumerate(markers):
         if idx == 0 and ln > 0:
@@ -524,7 +578,43 @@ def split_sections(text: str):
             tail = "\n".join(lines[end:]).strip()
             if tail:
                 sections.append({"name": "结尾", "text": tail})
-    return sections
+    return _post_split_fixup(sections)
+
+
+def _post_split_fixup(sections):
+    fixed = []
+    for sec in sections:
+        if sec.get("name") == "案号行":
+            t = (sec.get("text") or "").strip()
+            if not t:
+                continue
+            rest = t
+            m1 = re.search(
+                r"(?m)^(上诉人|被上诉人|原告|被告|第三人|申请人|被申请人|赔偿请求人|被申诉人|申诉人|法定代表人|委托(?:诉讼)?代理人|住所地|住址|统一社会信用代码)",
+                rest,
+            )
+            had_split = False
+            if m1:
+                head_part = rest[:m1.start()].strip()
+                if head_part:
+                    fixed.append({"name": "案号行", "text": head_part})
+                rest = rest[m1.start():].strip()
+                had_split = True
+            m2 = re.search(r"(本院受理后|依法组成合议庭|公开开庭审理|本案现已审理终结|原审法院.{0,12}作出[（(]\d{4}[）)])", rest)
+            if m2:
+                party_part = rest[:m2.start()].strip()
+                trial_part = rest[m2.start():].strip()
+                if party_part:
+                    fixed.append({"name": "当事人信息", "text": party_part})
+                if trial_part:
+                    fixed.append({"name": "审理经过", "text": trial_part})
+                continue
+            if had_split:
+                if rest:
+                    fixed.append({"name": "当事人信息", "text": rest})
+                continue
+        fixed.append(sec)
+    return [s for s in fixed if s.get("text")]
 
 def gentle_split_long_block(s: str, hard_limit=1600, target=900):
     s = s.strip()
