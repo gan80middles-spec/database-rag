@@ -33,13 +33,105 @@ RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
 RE_CASE_NO_STRICT = re.compile(r"[（(]\d{4}[）)][^号\n]{0,40}号")
 RE_COURT   = re.compile(r"[\u4e00-\u9fa5]{2,30}人民法院")
 RE_DATE_CHINESE = re.compile(r"([〇零○ＯO一二三四五六七八九十百千两]{3,})年([〇零○ＯO一二三四五六七八九十两]{1,3})月([〇零○ＯO一二三四五六七八九十两]{1,3})日")
-RE_STATUTE = re.compile(
-    r"《\s*[^》]{1,40}\s*》"
-    r"(?:（\d{2,4}年(?:修订|修正|修改)）)?"
-    r"(?:第[一二三四五六七八九十百千0-9]+条"
-    r"(?:第[一二三四五六七八九十百千0-9]+款)?"
-    r"(?:第[一二三四五六七八九十百千0-9]+[项目])?)"
+LAW_NAME_RE = re.compile(r"《([^》]{1,40})》")
+NUM_TOKEN = "一二三四五六七八九十百千万零〇○ＯO两0-9"
+ARTICLE_RE = re.compile(
+    rf"第[{NUM_TOKEN}]+(?:之[{NUM_TOKEN}]+)?条"
+    rf"(?:第[{NUM_TOKEN}]+款)?"
+    rf"(?:第[{NUM_TOKEN}]+[项目段])?"
 )
+PAREN_PAIRS = {"（": "）", "(": ")", "【": "】", "[": "]", "〔": "〕"}
+STATUTE_CONNECTORS = set("、,，；;和及与或并及至到—-~ 　")
+
+
+def _skip_whitespace(text: str, pos: int) -> int:
+    length = len(text)
+    while pos < length and text[pos].isspace():
+        pos += 1
+    return pos
+
+
+def _consume_parenthetical(text: str, pos: int) -> int:
+    ch = text[pos]
+    end_ch = PAREN_PAIRS.get(ch)
+    if not end_ch:
+        return pos
+    depth = 1
+    i = pos + 1
+    length = len(text)
+    while i < length:
+        cur = text[i]
+        if cur == ch:
+            depth += 1
+        elif cur == end_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return pos
+
+
+def _extract_statutes(text: str):
+    clean = _fix_broken_statute_spans(text)
+    results = []
+    idx = 0
+    length = len(clean)
+
+    while idx < length:
+        m = LAW_NAME_RE.search(clean, idx)
+        if not m:
+            break
+
+        law_text = clean[m.start():m.end()]
+        pos = m.end()
+        # 附近短括号信息（如“2017年修正”），但跳过“以下简称”等
+        while True:
+            pos = _skip_whitespace(clean, pos)
+            if pos >= length or clean[pos] not in PAREN_PAIRS:
+                break
+            end = _consume_parenthetical(clean, pos)
+            if end <= pos or end - pos > 24:
+                break
+            inner = clean[pos + 1:end - 1].strip()
+            if inner and not re.search(r"(以下简称|下称|简称)", inner):
+                law_text += clean[pos:end]
+            pos = end
+
+        lookahead_limit = min(length, pos + 160)
+        consumed = False
+
+        while pos < lookahead_limit:
+            pos = _skip_whitespace(clean, pos)
+            if pos >= lookahead_limit:
+                break
+
+            ch = clean[pos]
+            if ch in PAREN_PAIRS:
+                end = _consume_parenthetical(clean, pos)
+                if end > pos and end - pos <= 40:
+                    pos = end
+                    continue
+                break
+
+            if ch in STATUTE_CONNECTORS:
+                pos += 1
+                continue
+
+            m_article = ARTICLE_RE.match(clean, pos)
+            if m_article:
+                results.append(law_text + m_article.group(0))
+                pos = m_article.end()
+                consumed = True
+                continue
+
+            break
+
+        if not consumed:
+            results.append(law_text)
+
+        idx = max(pos, m.end())
+
+    return results
 
 CASE_CODE_TO_LEVEL = {
     # 再审链路
@@ -371,8 +463,7 @@ def extract_light_meta(text: str, file_path: str = ""):
     court = _detect_court(text)
     doc_type  = detect_doc_type(text, file_path)
     trial     = detect_trial_level(text, m_case_no.group(0) if m_case_no else "")
-    clean_for_statute = _fix_broken_statute_spans(text)
-    statutes  = list(dict.fromkeys([x.group(0) for x in RE_STATUTE.finditer(clean_for_statute)]))[:50]
+    statutes  = list(dict.fromkeys(_extract_statutes(text)))[:50]
     return {
         "case_number": m_case_no.group(0) if m_case_no else "",
         "court": court.strip() if court else "",
@@ -389,6 +480,7 @@ GEN_STRONG = [
     ("主文",   r"^(裁判主文|判决如下|裁定如下|决定如下)\s*$"),
     ("依据",   r"^(?:依照|根据)[^。\n]{0,80}$"),
     ("理由",   r"^(?:本院(?:经审理|经审查)?认为|法院认为|合议庭认为|本院意见|判决理由)\s*$"),
+    ("诉辩主张", r"^(?:事实[与和]理由)(?:[:：][^\n]{0,80})?$"),
     ("查明",   r"^(?:经审理查明|本院查明|案件基本事实|查明事实)\s*$"),
     ("尾部",   r"^(?:审判长|审判员|人民陪审员|书记员|本判决为终审判决|本裁定为终审裁定)"),
     ("一审判决", r"^(?:原审|一审)(?:法院)?(?:判决|裁定|决定)[^。\n]{0,10}[:：]?$|^(?:原审|一审)[^。\n]{0,40}(?:判决如下|裁定如下|决定如下)"),
@@ -443,6 +535,7 @@ PARTY_BLOCK_STOP_TOKENS = [
     "经审理查明", "本院查明", "案件基本事实", "证据", "证人证言", "鉴定意见",
     "本院认为", "法院认为", "合议庭认为", "判决理由",
     "裁判主文", "判决如下", "裁定如下", "决定如下", "依照", "根据",
+    "事实和理由", "事实与理由",
 ]
 
 PARTY_BLOCK_STOP = set(["审理经过","原审情况","查明","一审查明","一审认为","理由","依据","主文"])
