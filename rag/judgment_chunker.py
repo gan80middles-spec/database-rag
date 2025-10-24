@@ -33,7 +33,25 @@ RE_CASE_NO = re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{2,}\d+号")
 RE_CASE_NO_STRICT = re.compile(r"[（(]\d{4}[）)][^号\n]{0,40}号")
 RE_COURT   = re.compile(r"[\u4e00-\u9fa5]{2,30}人民法院")
 RE_DATE_CHINESE = re.compile(r"([〇零○ＯO一二三四五六七八九十百千两]{3,})年([〇零○ＯO一二三四五六七八九十两]{1,3})月([〇零○ＯO一二三四五六七八九十两]{1,3})日")
-RE_STATUTE = re.compile(r"《[^》]{1,30}》第?[一二三四五六七八九十百千0-9]+条")
+RE_STATUTE = re.compile(
+    r"《\s*[^》]{1,40}\s*》"
+    r"(?:（\d{2,4}年(?:修订|修正|修改)）)?"
+    r"(?:第[一二三四五六七八九十百千0-9]+条"
+    r"(?:第[一二三四五六七八九十百千0-9]+款)?"
+    r"(?:第[一二三四五六七八九十百千0-9]+[项目])?)"
+)
+
+CASE_CODE_TO_LEVEL = {
+    # 再审链路
+    "民申": "再审审查", "行申": "再审审查", "刑申": "再审审查", "知民申": "再审审查", "赔申": "再审审查", "破申": "再审审查",
+    "民监": "再审审查", "行监": "再审审查", "刑监": "再审审查", "知民监": "再审审查", "赔监": "再审审查", "破监": "再审审查",
+    "民再": "再审", "行再": "再审", "刑再": "再审", "知民再": "再审", "赔再": "再审", "破再": "再审",
+    # 二审 / 一审
+    "民终": "二审", "行终": "二审", "刑终": "二审", "知民终": "二审", "知行终": "二审", "知刑终": "二审", "赔终": "二审", "破终": "二审",
+    "民初": "一审", "行初": "一审", "刑初": "一审", "知民初": "一审", "知行初": "一审", "知刑初": "一审", "赔初": "一审", "破初": "一审",
+}
+
+RE_CASE_IN_TEXT = re.compile(r"[（(]\s*(20\d{2})\s*[）)]\s*[^\s\n号]{1,12}\s*\d+号")
 
 DOC_TYPE_TAILS = [
     "司法赔偿监督审查决定书",
@@ -100,92 +118,47 @@ def detect_doc_type(text: str, file_path: str = "") -> str:
     return best
 
 def detect_trial_level(text: str, case_no: str = "") -> str:
-    """
-    trial_level 统一标签优先由案号判定，其次才看正文提示语。
-    优先级（从高到低）：
-      死刑复核 > 赔偿委员会申诉/决定 > 再审/再审审查 > 二审 > 一审 > 执行程序
-    参考：最高法《关于人民法院案件案号的若干规定》及“案件类型代字标准”
-    """
+    src = case_no
+    if not src:
+        head = text[:6000]
+        m = RE_CASE_IN_TEXT.search(head)
+        if m:
+            src = m.group(0)
 
-    head = text[:8000]
-
-    # 1) 取案号（优先使用入参，其次从正文抬头处抓取）
-    src_case = case_no or ""
-    if not src_case:
-        # 兼容你文件里已有的全局正则；没有就用兜底
-        rx_list = []
-        try:
-            rx_list.append(RE_CASE_NO_STRICT)  # 若你的文件里有该正则
-        except NameError:
-            pass
-        try:
-            rx_list.append(RE_CASE_NO)         # 你现有的正则
-        except NameError:
-            pass
-        if not rx_list:
-            rx_list.append(re.compile(r"[（(]\d{4}[）)]\s*[\u4e00-\u9fa5A-Z0-9]{1,20}\d+号"))
-        for rx in rx_list:
-            m = rx.search(head)
-            if m:
-                src_case = m.group(0)
-                break
-
-    # 2) 先用案号里的类型代字判定（越具体越先返回）
-    if src_case:
-        # （a）死刑复核：最高法常用“刑复……号”
-        if re.search(r"刑复", src_case):
+    if src:
+        m = RE_CASE_IN_TEXT.search(src)
+        if m:
+            code = m.group(2)
+            # 精确匹配（最长优先）
+            for k in sorted(CASE_CODE_TO_LEVEL.keys(), key=len, reverse=True):
+                if k in code:
+                    return CASE_CODE_TO_LEVEL[k]
+        # 死刑复核/执行/赔委等特殊词
+        if "刑复" in src:
             return "死刑复核"
-
-        # （b）国家赔偿委员会：监督/申诉 与 决定
-        if "委赔监" in src_case:
+        if "委赔监" in src:
             return "赔偿委员会申诉"
-        # 注意：避免把“委赔监”也当成“委赔决定”
-        if "委赔" in src_case and "委赔监" not in src_case:
+        if "委赔" in src and "委赔监" not in src:
             return "赔偿委员会决定"
-
-        # （c）再审链路：先“再审审查”，后“再审”
-        # 申诉/申请再审审查：民申/行申/刑申/知民申/赔申/破申/…；依职权监督：民监/行监/刑监/赔监/破监/…
-        if re.search(r"(民申|行申|刑申|知民申|赔申|破申|民监|行监|刑监|知民监|赔监|破监)", src_case):
-            return "再审审查"
-        # 已立案再审审理：民再/行再/刑再/知民再/赔再/破再…
-        if re.search(r"(民再|行再|刑再|知民再|赔再|破再)", src_case):
-            return "再审"
-
-        # （d）二审 / 一审
-        if re.search(r"(民终|行终|刑终|知民终|知行终|知刑终|破终|赔终)", src_case):
-            return "二审"
-        if re.search(r"(民初|行初|刑初|知民初|知行初|知刑初|破初|赔初)", src_case):
-            return "一审"
-
-        # （e）执行程序：大量执行案号以“执”起始（执恢/执异/执配/执保/执破等）
-        if re.search(r"[\u4e00-\u9fa5A-Z]*执[\u4e00-\u9fa5A-Z]*\d+号", src_case):
+        if re.search(r"[\u4e00-\u9fa5A-Z]*执[\u4e00-\u9fa5A-Z]*\d+号", src):
             return "执行程序"
 
-    # 3) 若案号无法判定，再回退到正文关键字（你原来的规则，略做稳健化）
-    if re.search(r"本(判决|裁定)为终审(判决|裁定)", head):
+    # 正文兜底
+    head = text[:8000]
+    if re.search(r"本(判决|裁定)为终审", head):
         return "二审"
-
-    if re.search(r"(委赔监|赔偿监督程序|赔偿监督审查|赔偿委员会.{0,10}(申诉|监督))", head):
-        return "赔偿委员会申诉"
-    if re.search(r"赔偿委员会.{0,10}(决定书|决定)", head) or re.search(r"（\d{4}）[^，\n]*委赔[^号]*号", head):
-        return "赔偿委员会决定"
-
+    if re.search(r"死刑复核", head):
+        return "死刑复核"
     if re.search(r"再审(申请)?审查", head):
         return "再审审查"
     if re.search(r"(再审|重审).{0,6}(判决|裁定|决定)", head):
         return "再审"
-
-    if re.search(r"死刑复核", head):
-        return "死刑复核"
-
     if re.search(r"二审(判决|裁定|决定)?", head):
         return "二审"
     if re.search(r"一审(判决|裁定|决定)?", head):
         return "一审"
-
-    if re.search(r"执行(裁定|决定|异议|复议|分配|拍卖|变卖|终结|终止|恢复|追加|变更|限制|罚款|拘留)", head):
+    if re.search(r"执行(裁定|决定|异议|复议|分配|变卖|拍卖|终结|终止|恢复|追加|变更)", head):
         return "执行程序"
-
     return ""
 
 
@@ -383,11 +356,12 @@ def detect_judgment_date(text: str) -> str:
     return f"{year:04d}-{month:02d}-{day:02d}"
 
 def _fix_broken_statute_spans(text: str) -> str:
-    # 书名号内断行 → 连起来
+    # 书名号跨行、条款拆行
     t = re.sub(r"《\s*([^》\n]{1,40})\s*》", r"《\1》", text)
-    t = re.sub(r"《([^》\n]{1,20})\n+([^》\n]{1,20})》", r"《\1\2》", t)
-    # “第…条”被换行拆开
+    t = re.sub(r"《([^》\n]{1,25})\n+([^》\n]{1,25})》", r"《\1\2》", t)
     t = re.sub(r"第\s*([一二三四五六七八九十百千0-9]+)\s*条", r"第\1条", t)
+    t = re.sub(r"第\s*([一二三四五六七八九十百千0-9]+)\s*款", r"第\1款", t)
+    t = re.sub(r"第\s*([一二三四五六七八九十百千0-9]+)\s*[项目]", r"第\1项", t)
     return t
 
 def extract_light_meta(text: str, file_path: str = ""):
@@ -649,47 +623,55 @@ def gentle_split_long_block(s: str, hard_limit=1600, target=900):
         if tmp: refined.append(tmp)
     return [x.strip() for x in refined if x.strip()]
 
+SENT_SPLIT = re.compile(r"(?<=[。！？；])\s*(?![”』】）])")
+
+
+def sentence_chunks(s: str, min_chars=700, max_chars=1200, overlap_sentences=2):
+    s = s.strip()
+    if not s:
+        return []
+    # 先切句
+    sents = [x.strip() for x in SENT_SPLIT.split(s) if x.strip()]
+    chunks, buf = [], []
+    cur_len = 0
+    for sent in sents:
+        if cur_len + len(sent) <= max_chars or not buf:
+            buf.append(sent)
+            cur_len += len(sent)
+        else:
+            chunks.append("".join(buf).strip())
+            # 句粒度重叠：带上最后 N 句
+            tail = buf[-overlap_sentences:] if overlap_sentences > 0 else []
+            buf = tail + [sent]
+            cur_len = sum(len(x) for x in buf)
+    if buf:
+        chunks.append("".join(buf).strip())
+
+    # 太短的块（非主文/依据）尝试合并相邻
+    refined = []
+    tmp = ""
+    for c in chunks:
+        if not tmp:
+            tmp = c
+            continue
+        if len(tmp) < min_chars and len(tmp) + len(c) <= max_chars * 1.2:
+            tmp = tmp + c
+        else:
+            refined.append(tmp)
+            tmp = c
+    if tmp:
+        refined.append(tmp)
+    return refined
+
+
 def _chunk_one_section(sec_name: str, sec_text: str,
                        min_chars=700, max_chars=1200, overlap=120):
-    """
-    仅在【该 section 内】切块：
-      - 先做一次“温和”的结构化拆分（条款/空行/句号）；
-      - 再用滑动窗口合并到目标大小；
-      - overlap 仅在本段内部生效；
-      - 主文/依据：强制独立成块，不与其它段落合并。
-    """
-    # 先把很长的一段拆细（条款/空行/句号为优先分隔）
-    blocks = gentle_split_long_block(
-        sec_text,
-        hard_limit=max_chars,                 # 每小块的硬上限
-        target=(min_chars + max_chars) // 2   # 软目标
-    )
-    # “主文/依据”不再合并，直接返回
+    # 主文/依据：严格独立
     if sec_name in ("主文", "依据"):
-        return [b.strip() for b in blocks if b.strip()]
+        return sentence_chunks(sec_text, 1, 10**9, overlap_sentences=0)
 
-    chunks, buf = [], ""
-    for p in blocks:
-        p = p.strip()
-        if not p:
-            continue
-        if not buf:
-            buf = p
-            continue
-        # 能合就合，控制在 max_chars 内
-        if len(buf) + 1 + len(p) <= max_chars:
-            buf = f"{buf}\n{p}"
-        else:
-            # 推出一个块，并在【本段内】做 overlap
-            chunks.append(buf.strip())
-            if overlap > 0 and len(buf) > overlap:
-                tail = buf[-overlap:]
-                buf = f"{tail}\n{p}"
-            else:
-                buf = p
-    if buf.strip():
-        chunks.append(buf.strip())
-    return chunks
+    # 其他：句子窗口 + 句粒度重叠
+    return sentence_chunks(sec_text, min_chars, max_chars, overlap_sentences=2)
 
 
 def aggregate_chunks(sections, min_chars=700, max_chars=1200, overlap=120):
