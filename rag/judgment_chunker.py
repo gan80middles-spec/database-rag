@@ -664,16 +664,26 @@ def _extract_prosecutors(intro: str) -> List[str]:
 
 def _extract_lawyers(intro: str) -> List[Dict[str, str]]:
     res = []
-    for m in re.finditer(r"(?:指定)?辩护人[:：]?\s*([^\n。；]+)", intro):
+    pattern = re.compile(
+        r"(?:指定)?(?:辩护人|辩护律师|委托诉讼代理人|委托代理人|诉讼代理人)\s*[:：]\s*([^\n。；]+)"
+    )
+    for m in pattern.finditer(intro):
         seg = m.group(1).strip()
+        if not seg:
+            continue
         parts = [p.strip() for p in re.split(r"[，、]", seg) if p.strip()]
         if not parts:
             continue
-        name = parts[0].replace("律师", "").strip()
+        name = parts[0].strip()
+        if name.endswith("律师"):
+            name = name[:-2].strip()
         firm = None
         for p in parts[1:]:
-            if "律师事务所" in p or "法律援助" in p:
-                firm = p.replace("律师", "").strip()
+            clean = p.strip()
+            if clean.endswith("律师"):
+                clean = clean[:-2].strip()
+            if "律师事务所" in clean or "法律援助" in clean or clean.endswith("律师"):
+                firm = clean
                 break
         if name:
             res.append({"name": name, "firm": firm})
@@ -687,65 +697,112 @@ def _extract_lawyers(intro: str) -> List[Dict[str, str]]:
     return uniq
 
 
+_PARTY_ROLE_KEYWORDS = [
+    "被告人", "被告", "原告", "被上诉人", "上诉人", "申请人", "被申请人",
+    "再审申请人", "申请执行人", "被执行人", "第三人", "申诉人", "被申诉人",
+    "赔偿请求人"
+]
+
+_PARTY_ROLE_RE = re.compile(
+    rf"^(?P<role>{'|'.join(re.escape(x) for x in _PARTY_ROLE_KEYWORDS)})"
+    r"(?:（[^）]{0,40}）)?[:：]\s*(?P<body>.+)$"
+)
+
+
 def _extract_defendants(intro: str) -> List[Dict[str, Any]]:
     res = []
     for seg in re.split(r"[。；\n]", intro):
         seg = seg.strip()
-        if not seg or "被告人" not in seg:
+        if not seg:
             continue
-        mname = re.search(r"被告人\s*([\u4e00-\u9fa5·]+)", seg)
-        if not mname:
+
+        m_role = _PARTY_ROLE_RE.match(seg)
+        if m_role:
+            role = m_role.group("role")
+            body = m_role.group("body").strip()
+            name_field = re.split(r"[，,；;]", body, 1)[0].strip()
+            if not name_field:
+                continue
+            names = [n.strip() for n in re.split(r"[、和及与]", name_field) if n.strip()]
+        else:
+            if "被告人" not in seg:
+                continue
+            role = "被告人"
+            names = []
+            mname = re.search(r"被告人\s*([\u4e00-\u9fa5·]+)", seg)
+            if mname:
+                names = [mname.group(1).strip()]
+            if not names:
+                continue
+
+        for name in names:
+            gender = (re.search(r"，\s*(男|女)\s*，", seg) or
+                      re.search(r"(男|女)[，、]", seg) or
+                      re.search(r"(男|女)$", seg))
+            gender = gender.group(1) if gender else None
+            dob = (re.search(r"(\d{4}年\d{1,2}月\d{1,2}日)\s*出生", seg) or
+                   re.search(r"生于\s*(\d{4}年\d{1,2}月\d{1,2}日)", seg))
+            dob = _normalize_date_cn(dob.group(1)) if dob else None
+            addr = None
+            madd = re.search(r"(?:住址|户籍所在地|户籍地|住所地|所在地|住所|住)[:：]?([^，。；]+)", seg)
+            if madd:
+                addr = madd.group(1).strip()
+            priors = []
+            for pm in re.finditer(r"(因?犯[^\n。；]*?于\d{4}年\d{1,2}月\d{1,2}日[^\n。；]*?判处[^\n。；]*?(?:刑)?[^\n。；]*?)", seg):
+                priors.append(pm.group(1).strip())
+            detention = {}
+            for dm in re.finditer(r"于(\d{4}年\d{1,2}月\d{1,2}日)[^。；]*?(拘留|逮捕|羁押)", seg):
+                iso = _normalize_date_cn(dm.group(1))
+                kind = dm.group(2)
+                if kind == "拘留":
+                    detention["detained"] = iso
+                elif kind == "逮捕":
+                    detention["arrested"] = iso
+                else:
+                    detention["custody"] = iso
+            res.append({
+                "name_masked": name,
+                "aka": None,
+                "gender": gender,
+                "dob": dob,
+                "address": addr,
+                "prior_convictions": priors or None,
+                "detention": detention or None,
+                "role": role,
+                "disposition": {
+                    "offense": None,
+                    "imprisonment_months": None,
+                    "imprisonment_desc": None,
+                    "fine_amount": None,
+                    "confiscation_amount": None,
+                    "detention_offset": False,
+                    "term_start": None,
+                    "term_end": None,
+                    "probation": False
+                },
+                "factors": {
+                    "self_surrender": False,
+                    "plead_guilty": False,
+                    "accessory": False,
+                    "recidivist": False,
+                    "confession": False
+                }
+            })
+
+    uniq = []
+    seen = set()
+    for item in res:
+        key = (
+            item.get("name_masked"),
+            item.get("role"),
+            item.get("dob"),
+            item.get("address")
+        )
+        if key in seen:
             continue
-        name = mname.group(1).strip()
-        gender = (re.search(r"，\s*(男|女)\s*，", seg) or re.search(r"(男|女)[，、]", seg) or re.search(r"(男|女)$", seg))
-        gender = gender.group(1) if gender else None
-        dob = (re.search(r"(\d{4}年\d{1,2}月\d{1,2}日)\s*出生", seg) or re.search(r"生于\s*(\d{4}年\d{1,2}月\d{1,2}日)", seg))
-        dob = _normalize_date_cn(dob.group(1)) if dob else None
-        addr = None
-        madd = re.search(r"(?:住址|住|户籍地|户籍所在地)[:：]?([^，。；]+)", seg)
-        if madd:
-            addr = madd.group(1).strip()
-        priors = []
-        for pm in re.finditer(r"(因?犯[^\n。；]*?于\d{4}年\d{1,2}月\d{1,2}日[^\n。；]*?判处[^\n。；]*?(?:刑)?[^\n。；]*?)", seg):
-            priors.append(pm.group(1).strip())
-        detention = {}
-        for dm in re.finditer(r"于(\d{4}年\d{1,2}月\d{1,2}日)[^。；]*?(拘留|逮捕|羁押)", seg):
-            iso = _normalize_date_cn(dm.group(1))
-            kind = dm.group(2)
-            if kind == "拘留":
-                detention["detained"] = iso
-            elif kind == "逮捕":
-                detention["arrested"] = iso
-            else:
-                detention["custody"] = iso
-        res.append({
-            "name_masked": name,
-            "aka": None,
-            "gender": gender,
-            "dob": dob,
-            "address": addr,
-            "prior_convictions": priors or None,
-            "detention": detention or None,
-            "disposition": {
-                "offense": None,
-                "imprisonment_months": None,
-                "imprisonment_desc": None,
-                "fine_amount": None,
-                "confiscation_amount": None,
-                "detention_offset": False,
-                "term_start": None,
-                "term_end": None,
-                "probation": False
-            },
-            "factors": {
-                "self_surrender": False,
-                "plead_guilty": False,
-                "accessory": False,
-                "recidivist": False,
-                "confession": False
-            }
-        })
-    return res
+        seen.add(key)
+        uniq.append(item)
+    return uniq
 
 
 def _extract_verdict_blocks(text: str) -> str:
