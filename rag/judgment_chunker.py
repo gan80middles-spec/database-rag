@@ -705,44 +705,111 @@ _PARTY_ROLE_KEYWORDS = [
 
 _PARTY_ROLE_RE = re.compile(
     rf"^(?P<role>{'|'.join(re.escape(x) for x in _PARTY_ROLE_KEYWORDS)})"
-    r"(?:（[^）]{0,40}）)?[:：]\s*(?P<body>.+)$"
+    r"(?:（[^）]{0,40}）)?\s*[:：]?\s*(?P<body>.+)$"
 )
+
+_NAME_HEAD_RE = re.compile(r"^[\u4e00-\u9fa5·]{1,4}(?:[、和及与][\u4e00-\u9fa5·]{1,4})*(?=[，,；;、。\s（）()男女]|$)")
+_NAME_SPLIT_RE = re.compile(r"[、和及与]")
+_NAME_TAIL_ALLOWED = set("，,；;、。 \t（）()男女")
+
+
+def _defendant_has_info(item: Dict[str, Any]) -> bool:
+    return any([
+        item.get("gender"),
+        item.get("dob"),
+        item.get("address"),
+        item.get("prior_convictions"),
+        item.get("detention"),
+    ])
+
+
+def _merge_defendant_info(target: Dict[str, Any], source: Dict[str, Any]) -> bool:
+    changed = False
+    for field in ["aka", "gender", "dob", "address"]:
+        if not target.get(field) and source.get(field):
+            target[field] = source[field]
+            changed = True
+
+    if source.get("prior_convictions"):
+        existing = target.get("prior_convictions") or []
+        if not isinstance(existing, list):
+            existing = []
+        for record in source["prior_convictions"]:
+            if record not in existing:
+                existing.append(record)
+                changed = True
+        target["prior_convictions"] = existing or None
+
+    if source.get("detention"):
+        existing_det = target.get("detention") or {}
+        if not isinstance(existing_det, dict):
+            existing_det = {}
+        merged = dict(existing_det)
+        for k, v in source["detention"].items():
+            if v and k not in merged:
+                merged[k] = v
+                changed = True
+        target["detention"] = merged or None
+
+    return changed
+
+
+def _split_name_field(name_field: str) -> List[str]:
+    if not name_field:
+        return []
+    cleaned = re.sub(r"等人?$", "", name_field.strip())
+    if not cleaned:
+        return []
+    return [n.strip() for n in _NAME_SPLIT_RE.split(cleaned) if n.strip()]
 
 
 def _extract_defendants(intro: str) -> List[Dict[str, Any]]:
-    res = []
+    res: List[Dict[str, Any]] = []
     for seg in re.split(r"[。；\n]", intro):
         seg = seg.strip()
         if not seg:
             continue
 
         m_role = _PARTY_ROLE_RE.match(seg)
+        names: List[str] = []
+        role: Optional[str] = None
         if m_role:
             role = m_role.group("role")
             body = m_role.group("body").strip()
-            name_field = re.split(r"[，,；;]", body, 1)[0].strip()
-            if not name_field:
-                continue
-            names = [n.strip() for n in re.split(r"[、和及与]", name_field) if n.strip()]
+            m_names = _NAME_HEAD_RE.match(body)
+            if m_names:
+                names = _split_name_field(m_names.group(0))
+            else:
+                first = re.split(r"[，,；;]", body, 1)[0].strip()
+                alt = _NAME_HEAD_RE.match(first)
+                if alt:
+                    names = _split_name_field(alt.group(0))
         else:
-            if "被告人" not in seg:
-                continue
+            stripped = seg.lstrip()
+            if stripped.startswith("被告人"):
+                role = "被告人"
+                found = []
+                for m in re.finditer(r"被告人\s*([\u4e00-\u9fa5·]{1,4}(?:[、和及与][\u4e00-\u9fa5·]{1,4})*)", stripped):
+                    tail = stripped[m.end():m.end() + 1]
+                    if tail and tail not in _NAME_TAIL_ALLOWED:
+                        continue
+                    found.extend(_split_name_field(m.group(1)))
+                names = found
+
+        if not names:
+            continue
+
+        if not role:
             role = "被告人"
-            names = []
-            mname = re.search(r"被告人\s*([\u4e00-\u9fa5·]+)", seg)
-            if mname:
-                names = [mname.group(1).strip()]
-            if not names:
-                continue
 
         for name in names:
             gender = (re.search(r"，\s*(男|女)\s*，", seg) or
                       re.search(r"(男|女)[，、]", seg) or
                       re.search(r"(男|女)$", seg))
-            gender = gender.group(1) if gender else None
+            gender_val = gender.group(1) if gender else None
             dob = (re.search(r"(\d{4}年\d{1,2}月\d{1,2}日)\s*出生", seg) or
                    re.search(r"生于\s*(\d{4}年\d{1,2}月\d{1,2}日)", seg))
-            dob = _normalize_date_cn(dob.group(1)) if dob else None
+            dob_val = _normalize_date_cn(dob.group(1)) if dob else None
             addr = None
             madd = re.search(r"(?:住址|户籍所在地|户籍地|住所地|所在地|住所|住)[:：]?([^，。；]+)", seg)
             if madd:
@@ -750,7 +817,7 @@ def _extract_defendants(intro: str) -> List[Dict[str, Any]]:
             priors = []
             for pm in re.finditer(r"(因?犯[^\n。；]*?于\d{4}年\d{1,2}月\d{1,2}日[^\n。；]*?判处[^\n。；]*?(?:刑)?[^\n。；]*?)", seg):
                 priors.append(pm.group(1).strip())
-            detention = {}
+            detention: Dict[str, Any] = {}
             for dm in re.finditer(r"于(\d{4}年\d{1,2}月\d{1,2}日)[^。；]*?(拘留|逮捕|羁押)", seg):
                 iso = _normalize_date_cn(dm.group(1))
                 kind = dm.group(2)
@@ -760,11 +827,12 @@ def _extract_defendants(intro: str) -> List[Dict[str, Any]]:
                     detention["arrested"] = iso
                 else:
                     detention["custody"] = iso
-            res.append({
+
+            candidate = {
                 "name_masked": name,
                 "aka": None,
-                "gender": gender,
-                "dob": dob,
+                "gender": gender_val,
+                "dob": dob_val,
                 "address": addr,
                 "prior_convictions": priors or None,
                 "detention": detention or None,
@@ -787,7 +855,26 @@ def _extract_defendants(intro: str) -> List[Dict[str, Any]]:
                     "recidivist": False,
                     "confession": False
                 }
-            })
+            }
+
+            existing = None
+            for item in res:
+                if item.get("name_masked") == name and item.get("role") == role:
+                    conflict = False
+                    for field in ["gender", "dob", "address"]:
+                        if item.get(field) and candidate.get(field) and item.get(field) != candidate.get(field):
+                            conflict = True
+                            break
+                    if not conflict:
+                        existing = item
+                        break
+
+            if existing:
+                merged = _merge_defendant_info(existing, candidate)
+                if not merged and not _defendant_has_info(candidate):
+                    continue
+            else:
+                res.append(candidate)
 
     uniq = []
     seen = set()
