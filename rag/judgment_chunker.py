@@ -545,167 +545,446 @@ DEEPSEEK_BETA_BASE_URL = os.getenv("DEEPSEEK_BETA_BASE_URL", "https://api.deepse
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
-DEEPSEEK_JSON_EXAMPLE = json.dumps({
-    "procuratorate": "",
-    "prosecutors": [],
-    "defendants": [
-        {
-            "name_masked": "",
-            "aka": "",
-            "gender": "",
-            "dob": "",
-            "address": "",
-            "role": "被告人",
-            "prior_convictions": [],
-            "detention": {
-                "detained": "",
-                "arrested": "",
-                "custody": "",
-                "release": ""
-            },
-            "disposition": {
-                "offense": "",
-                "imprisonment_desc": "",
-                "imprisonment_months": 0,
-                "fine_amount": 0,
-                "confiscation_amount": 0,
-                "detention_offset": False,
-                "term_start": "",
-                "term_end": "",
-                "probation": False
-            },
-            "factors": {
-                "self_surrender": False,
-                "plead_guilty": False,
-                "accessory": False,
-                "recidivist": False,
-                "confession": False
-            }
-        }
-    ],
-    "lawyers": [],
-    "dispute_focus": [],
-    "opinion_summary": []
-}, ensure_ascii=False)
+CRIMINAL_DOC_INFO_TEMPLATE = {
+    "meta": {
+        "case_system": "",
+        "case_subtype": "",
+        "doc_type": "",
+        "trial_level": "",
+        "court": "",
+        "case_number": "",
+        "judgment_date": ""
+    },
+    "parties": {
+        "procuratorate": "",
+        "prosecutors": [],
+        "defendants": [],
+        "lawyers": []
+    },
+    "procedure": {
+        "mode": "",
+        "plead_guilty": False,
+        "plea_statement": ""
+    },
+    "disposition": {
+        "offense": "",
+        "imprisonment_text": "",
+        "imprisonment_months": 0,
+        "fine_amount": 0,
+        "detention_offset": False,
+        "term_start": "",
+        "term_end": ""
+    },
+    "factors": {
+        "recidivist_candidate": False,
+        "drug_repeat_candidate": False,
+        "evidence_sentence": ""
+    },
+    "facts": {
+        "time": "",
+        "place": "",
+        "victim_or_buyer": "",
+        "price_per_unit": 0.0,
+        "count": 0,
+        "weight_g": 0.0,
+        "drug_common_name": "",
+        "drug_chemical_name": ""
+    },
+    "assets": {
+        "money_confiscated_cny": 0,
+        "items": []
+    },
+    "appeal": {
+        "days": 0,
+        "to_court": ""
+    },
+    "statutes": [],
+    "spans": []
+}
 
-DEEPSEEK_DOC_INFO_TOOL = [{
+CIVIL_DOC_INFO_TEMPLATE = {
+    "meta": {
+        "case_system": "",
+        "case_subtype": "",
+        "doc_type": "",
+        "trial_level": "",
+        "court": "",
+        "case_number": "",
+        "judgment_date": ""
+    },
+    "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "third_parties": [],
+        "agents": []
+    },
+    "claims": [],
+    "facts_and_reasons": {
+        "facts": "",
+        "court_findings": ""
+    },
+    "judgment_items": [],
+    "costs": {
+        "acceptance_fee_cny": 0,
+        "other_fees_cny": 0,
+        "allocation": ""
+    },
+    "appeal": {
+        "days": 0,
+        "to_court": ""
+    },
+    "statutes": [],
+    "spans": []
+}
+
+ADMIN_DOC_INFO_TEMPLATE = {
+    "meta": {
+        "case_system": "",
+        "case_subtype": "",
+        "doc_type": "",
+        "trial_level": "",
+        "court": "",
+        "case_number": "",
+        "judgment_date": ""
+    },
+    "parties": {
+        "plaintiffs": [],
+        "defendants": [],
+        "third_parties": [],
+        "agents": []
+    },
+    "admin_act": {
+        "agency": "",
+        "document_no": "",
+        "act_date": "",
+        "content": ""
+    },
+    "requests": [],
+    "facts_and_reasons": {
+        "facts": "",
+        "court_findings": ""
+    },
+    "judgment_items": [],
+    "fee_allocation": {
+        "fee_total_cny": 0,
+        "allocation": ""
+    },
+    "appeal": {
+        "days": 0,
+        "to_court": ""
+    },
+    "statutes": [],
+    "spans": []
+}
+
+ENFORCE_DOC_INFO_TEMPLATE = {
+    "meta": {
+        "case_system": "",
+        "case_subtype": "",
+        "doc_type": "",
+        "trial_level": "",
+        "court": "",
+        "case_number": "",
+        "judgment_date": ""
+    },
+    "parties": {
+        "applicants": [],
+        "respondents": [],
+        "others": []
+    },
+    "execution_basis": {
+        "basis_type": "",
+        "basis_doc_no": "",
+        "basis_court": "",
+        "basis_date": "",
+        "main_obligation": ""
+    },
+    "execution_process": "",
+    "measures": [],
+    "result": {
+        "type": "",
+        "detail": ""
+    },
+    "fee": {
+        "amount_cny": 0,
+        "allocation": ""
+    },
+    "statutes": [],
+    "spans": []
+}
+
+STATE_COMP_DOC_INFO_TEMPLATE = {
+    "meta": {
+        "case_system": "",
+        "case_subtype": "",
+        "doc_type": "",
+        "trial_level": "",
+        "court": "",
+        "case_number": "",
+        "judgment_date": ""
+    },
+    "parties": {
+        "claimants": [],
+        "obligated_org": "",
+        "agents": []
+    },
+    "requests": [],
+    "findings": {
+        "facts": "",
+        "court_findings": ""
+    },
+    "compensation_items": [],
+    "formula": {
+        "daily_standard_cny": 0,
+        "days": 0,
+        "other_factors": "",
+        "explanation": ""
+    },
+    "amounts": {
+        "subtotal_cny": 0,
+        "total_cny": 0
+    },
+    "decision_items": [],
+    "remedy": {
+        "reconsideration": "",
+        "litigation": ""
+    },
+    "statutes": [],
+    "spans": []
+}
+
+DOC_INFO_TEMPLATES = {
+    "刑事": CRIMINAL_DOC_INFO_TEMPLATE,
+    "民事": CIVIL_DOC_INFO_TEMPLATE,
+    "行政": ADMIN_DOC_INFO_TEMPLATE,
+    "执行": ENFORCE_DOC_INFO_TEMPLATE,
+    "国家赔偿": STATE_COMP_DOC_INFO_TEMPLATE
+}
+
+DEEPSEEK_JSON_EXAMPLE = {
+    key: json.dumps(value, ensure_ascii=False)
+    for key, value in DOC_INFO_TEMPLATES.items()
+}
+
+CRIMINAL_DOC_INFO_TOOL = [{
     "type": "function",
     "function": {
         "name": "produce_judgment_info",
         "strict": True,
-        "description": "从判决书中抽取涉案机关、检察官、被告人、辩护人以及判决结果等要素，未知信息使用空串、0、false 或空数组。",
+        "description": "从刑事判决书中抽取元数据、当事人、诉讼程序、裁判结果以及引用法条等要素，未知信息使用空串、0、false 或空数组。",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
             "required": [
-                "procuratorate",
-                "prosecutors",
-                "defendants",
-                "lawyers",
-                "dispute_focus",
-                "opinion_summary"
+                "meta",
+                "parties",
+                "procedure",
+                "disposition",
+                "factors",
+                "facts",
+                "assets",
+                "appeal",
+                "statutes",
+                "spans"
             ],
             "properties": {
-                "procuratorate": {"type": "string"},
-                "prosecutors": {
-                    "type": "array",
-                    "items": {"type": "string"}
+                "meta": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "case_system",
+                        "case_subtype",
+                        "doc_type",
+                        "trial_level",
+                        "court",
+                        "case_number",
+                        "judgment_date"
+                    ],
+                    "properties": {
+                        "case_system": {"type": "string"},
+                        "case_subtype": {"type": "string"},
+                        "doc_type": {"type": "string"},
+                        "trial_level": {"type": "string"},
+                        "court": {"type": "string"},
+                        "case_number": {"type": "string"},
+                        "judgment_date": {"type": "string"}
+                    }
                 },
-                "lawyers": {
-                    "type": "array",
-                    "items": {"type": "string"}
+                "parties": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "procuratorate",
+                        "prosecutors",
+                        "defendants",
+                        "lawyers"
+                    ],
+                    "properties": {
+                        "procuratorate": {"type": "string"},
+                        "prosecutors": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "defendants": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [
+                                    "name_masked",
+                                    "aka",
+                                    "gender",
+                                    "dob",
+                                    "address",
+                                    "role",
+                                    "detention"
+                                ],
+                                "properties": {
+                                    "name_masked": {"type": "string"},
+                                    "aka": {"type": "string"},
+                                    "gender": {"type": "string"},
+                                    "dob": {"type": "string"},
+                                    "address": {"type": "string"},
+                                    "role": {"type": "string"},
+                                    "detention": {
+                                        "type": "object",
+                                        "additionalProperties": False,
+                                        "required": [
+                                            "brought_in",
+                                            "detained",
+                                            "arrested",
+                                            "custody"
+                                        ],
+                                        "properties": {
+                                            "brought_in": {"type": "string"},
+                                            "detained": {"type": "string"},
+                                            "arrested": {"type": "string"},
+                                            "custody": {"type": "string"}
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "lawyers": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
                 },
-                "dispute_focus": {
-                    "type": "array",
-                    "items": {"type": "string"}
+                "procedure": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["mode", "plead_guilty", "plea_statement"],
+                    "properties": {
+                        "mode": {"type": "string"},
+                        "plead_guilty": {"type": "boolean"},
+                        "plea_statement": {"type": "string"}
+                    }
                 },
-                "opinion_summary": {
-                    "type": "array",
-                    "items": {"type": "string"}
+                "disposition": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "offense",
+                        "imprisonment_text",
+                        "imprisonment_months",
+                        "fine_amount",
+                        "detention_offset",
+                        "term_start",
+                        "term_end"
+                    ],
+                    "properties": {
+                        "offense": {"type": "string"},
+                        "imprisonment_text": {"type": "string"},
+                        "imprisonment_months": {"type": "integer"},
+                        "fine_amount": {"type": "integer"},
+                        "detention_offset": {"type": "boolean"},
+                        "term_start": {"type": "string"},
+                        "term_end": {"type": "string"}
+                    }
                 },
-                "defendants": {
+                "factors": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "recidivist_candidate",
+                        "drug_repeat_candidate",
+                        "evidence_sentence"
+                    ],
+                    "properties": {
+                        "recidivist_candidate": {"type": "boolean"},
+                        "drug_repeat_candidate": {"type": "boolean"},
+                        "evidence_sentence": {"type": "string"}
+                    }
+                },
+                "facts": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "time",
+                        "place",
+                        "victim_or_buyer",
+                        "price_per_unit",
+                        "count",
+                        "weight_g",
+                        "drug_common_name",
+                        "drug_chemical_name"
+                    ],
+                    "properties": {
+                        "time": {"type": "string"},
+                        "place": {"type": "string"},
+                        "victim_or_buyer": {"type": "string"},
+                        "price_per_unit": {"type": "number"},
+                        "count": {"type": "integer"},
+                        "weight_g": {"type": "number"},
+                        "drug_common_name": {"type": "string"},
+                        "drug_chemical_name": {"type": "string"}
+                    }
+                },
+                "assets": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["money_confiscated_cny", "items"],
+                    "properties": {
+                        "money_confiscated_cny": {"type": "integer"},
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                },
+                "appeal": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["days", "to_court"],
+                    "properties": {
+                        "days": {"type": "integer"},
+                        "to_court": {"type": "string"}
+                    }
+                },
+                "statutes": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": [
-                            "name_masked",
-                            "aka",
-                            "gender",
-                            "dob",
-                            "address",
-                            "role",
-                            "prior_convictions",
-                            "detention",
-                            "disposition",
-                            "factors"
-                        ],
+                        "required": ["law", "article", "clause", "role"],
                         "properties": {
-                            "name_masked": {"type": "string"},
-                            "aka": {"type": "string"},
-                            "gender": {"type": "string"},
-                            "dob": {"type": "string"},
-                            "address": {"type": "string"},
-                            "role": {"type": "string"},
-                            "prior_convictions": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "detention": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": ["detained", "arrested", "custody", "release"],
-                                "properties": {
-                                    "detained": {"type": "string"},
-                                    "arrested": {"type": "string"},
-                                    "custody": {"type": "string"},
-                                    "release": {"type": "string"}
-                                }
-                            },
-                            "disposition": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": [
-                                    "offense",
-                                    "imprisonment_desc",
-                                    "imprisonment_months",
-                                    "fine_amount",
-                                    "confiscation_amount",
-                                    "detention_offset",
-                                    "term_start",
-                                    "term_end",
-                                    "probation"
-                                ],
-                                "properties": {
-                                    "offense": {"type": "string"},
-                                    "imprisonment_desc": {"type": "string"},
-                                    "imprisonment_months": {"type": "integer"},
-                                    "fine_amount": {"type": "integer"},
-                                    "confiscation_amount": {"type": "integer"},
-                                    "detention_offset": {"type": "boolean"},
-                                    "term_start": {"type": "string"},
-                                    "term_end": {"type": "string"},
-                                    "probation": {"type": "boolean"}
-                                }
-                            },
-                            "factors": {
-                                "type": "object",
-                                "additionalProperties": False,
-                                "required": [
-                                    "self_surrender",
-                                    "plead_guilty",
-                                    "accessory",
-                                    "recidivist",
-                                    "confession"
-                                ],
-                                "properties": {
-                                    "self_surrender": {"type": "boolean"},
-                                    "plead_guilty": {"type": "boolean"},
-                                    "accessory": {"type": "boolean"},
-                                    "recidivist": {"type": "boolean"},
-                                    "confession": {"type": "boolean"}
-                                }
-                            }
+                            "law": {"type": "string"},
+                            "article": {"type": "integer"},
+                            "clause": {"type": "integer"},
+                            "role": {"type": "string"}
+                        }
+                    }
+                },
+                "spans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field", "text"],
+                        "properties": {
+                            "field": {"type": "string"},
+                            "text": {"type": "string"}
                         }
                     }
                 }
@@ -713,6 +992,653 @@ DEEPSEEK_DOC_INFO_TOOL = [{
         }
     }
 }]
+
+CIVIL_DOC_INFO_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "produce_judgment_info",
+        "strict": True,
+        "description": "从民事判决/裁定/调解书中抽取元数据、当事人、诉讼请求、裁判结果等要素，未知信息使用空串、0、false 或空数组。",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "meta",
+                "parties",
+                "claims",
+                "facts_and_reasons",
+                "judgment_items",
+                "costs",
+                "appeal",
+                "statutes",
+                "spans"
+            ],
+            "properties": {
+                "meta": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "case_system",
+                        "case_subtype",
+                        "doc_type",
+                        "trial_level",
+                        "court",
+                        "case_number",
+                        "judgment_date"
+                    ],
+                    "properties": {
+                        "case_system": {"type": "string"},
+                        "case_subtype": {"type": "string"},
+                        "doc_type": {"type": "string"},
+                        "trial_level": {"type": "string"},
+                        "court": {"type": "string"},
+                        "case_number": {"type": "string"},
+                        "judgment_date": {"type": "string"}
+                    }
+                },
+                "parties": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "plaintiffs",
+                        "defendants",
+                        "third_parties",
+                        "agents"
+                    ],
+                    "properties": {
+                        "plaintiffs": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "defendants": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "third_parties": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "agents": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                },
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["party", "text"],
+                        "properties": {
+                            "party": {"type": "string"},
+                            "text": {"type": "string"}
+                        }
+                    }
+                },
+                "facts_and_reasons": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["facts", "court_findings"],
+                    "properties": {
+                        "facts": {"type": "string"},
+                        "court_findings": {"type": "string"}
+                    }
+                },
+                "judgment_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["item", "detail"],
+                        "properties": {
+                            "item": {"type": "string"},
+                            "detail": {"type": "string"}
+                        }
+                    }
+                },
+                "costs": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "acceptance_fee_cny",
+                        "other_fees_cny",
+                        "allocation"
+                    ],
+                    "properties": {
+                        "acceptance_fee_cny": {"type": "integer"},
+                        "other_fees_cny": {"type": "integer"},
+                        "allocation": {"type": "string"}
+                    }
+                },
+                "appeal": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["days", "to_court"],
+                    "properties": {
+                        "days": {"type": "integer"},
+                        "to_court": {"type": "string"}
+                    }
+                },
+                "statutes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["law", "article", "clause", "role"],
+                        "properties": {
+                            "law": {"type": "string"},
+                            "article": {"type": "integer"},
+                            "clause": {"type": "integer"},
+                            "role": {"type": "string"}
+                        }
+                    }
+                },
+                "spans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field", "text"],
+                        "properties": {
+                            "field": {"type": "string"},
+                            "text": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}]
+
+ADMIN_DOC_INFO_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "produce_judgment_info",
+        "strict": True,
+        "description": "从行政判决/裁定/决定中抽取元数据、当事人、行政行为、诉求及裁判结果等要素，未知信息使用空串、0、false 或空数组。",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "meta",
+                "parties",
+                "admin_act",
+                "requests",
+                "facts_and_reasons",
+                "judgment_items",
+                "fee_allocation",
+                "appeal",
+                "statutes",
+                "spans"
+            ],
+            "properties": {
+                "meta": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "case_system",
+                        "case_subtype",
+                        "doc_type",
+                        "trial_level",
+                        "court",
+                        "case_number",
+                        "judgment_date"
+                    ],
+                    "properties": {
+                        "case_system": {"type": "string"},
+                        "case_subtype": {"type": "string"},
+                        "doc_type": {"type": "string"},
+                        "trial_level": {"type": "string"},
+                        "court": {"type": "string"},
+                        "case_number": {"type": "string"},
+                        "judgment_date": {"type": "string"}
+                    }
+                },
+                "parties": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "plaintiffs",
+                        "defendants",
+                        "third_parties",
+                        "agents"
+                    ],
+                    "properties": {
+                        "plaintiffs": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "defendants": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "third_parties": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "agents": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                },
+                "admin_act": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "agency",
+                        "document_no",
+                        "act_date",
+                        "content"
+                    ],
+                    "properties": {
+                        "agency": {"type": "string"},
+                        "document_no": {"type": "string"},
+                        "act_date": {"type": "string"},
+                        "content": {"type": "string"}
+                    }
+                },
+                "requests": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["party", "text"],
+                        "properties": {
+                            "party": {"type": "string"},
+                            "text": {"type": "string"}
+                        }
+                    }
+                },
+                "facts_and_reasons": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["facts", "court_findings"],
+                    "properties": {
+                        "facts": {"type": "string"},
+                        "court_findings": {"type": "string"}
+                    }
+                },
+                "judgment_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["item", "detail"],
+                        "properties": {
+                            "item": {"type": "string"},
+                            "detail": {"type": "string"}
+                        }
+                    }
+                },
+                "fee_allocation": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["fee_total_cny", "allocation"],
+                    "properties": {
+                        "fee_total_cny": {"type": "integer"},
+                        "allocation": {"type": "string"}
+                    }
+                },
+                "appeal": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["days", "to_court"],
+                    "properties": {
+                        "days": {"type": "integer"},
+                        "to_court": {"type": "string"}
+                    }
+                },
+                "statutes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["law", "article", "clause", "role"],
+                        "properties": {
+                            "law": {"type": "string"},
+                            "article": {"type": "integer"},
+                            "clause": {"type": "integer"},
+                            "role": {"type": "string"}
+                        }
+                    }
+                },
+                "spans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field", "text"],
+                        "properties": {
+                            "field": {"type": "string"},
+                            "text": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}]
+
+ENFORCE_DOC_INFO_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "produce_judgment_info",
+        "strict": True,
+        "description": "从执行裁定/决定/公告中抽取元数据、当事人、执行依据及措施等要素，未知信息使用空串、0、false 或空数组。",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "meta",
+                "parties",
+                "execution_basis",
+                "execution_process",
+                "measures",
+                "result",
+                "fee",
+                "statutes",
+                "spans"
+            ],
+            "properties": {
+                "meta": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "case_system",
+                        "case_subtype",
+                        "doc_type",
+                        "trial_level",
+                        "court",
+                        "case_number",
+                        "judgment_date"
+                    ],
+                    "properties": {
+                        "case_system": {"type": "string"},
+                        "case_subtype": {"type": "string"},
+                        "doc_type": {"type": "string"},
+                        "trial_level": {"type": "string"},
+                        "court": {"type": "string"},
+                        "case_number": {"type": "string"},
+                        "judgment_date": {"type": "string"}
+                    }
+                },
+                "parties": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "applicants",
+                        "respondents",
+                        "others"
+                    ],
+                    "properties": {
+                        "applicants": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "respondents": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "others": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                },
+                "execution_basis": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "basis_type",
+                        "basis_doc_no",
+                        "basis_court",
+                        "basis_date",
+                        "main_obligation"
+                    ],
+                    "properties": {
+                        "basis_type": {"type": "string"},
+                        "basis_doc_no": {"type": "string"},
+                        "basis_court": {"type": "string"},
+                        "basis_date": {"type": "string"},
+                        "main_obligation": {"type": "string"}
+                    }
+                },
+                "execution_process": {"type": "string"},
+                "measures": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "result": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["type", "detail"],
+                    "properties": {
+                        "type": {"type": "string"},
+                        "detail": {"type": "string"}
+                    }
+                },
+                "fee": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["amount_cny", "allocation"],
+                    "properties": {
+                        "amount_cny": {"type": "integer"},
+                        "allocation": {"type": "string"}
+                    }
+                },
+                "statutes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["law", "article", "clause", "role"],
+                        "properties": {
+                            "law": {"type": "string"},
+                            "article": {"type": "integer"},
+                            "clause": {"type": "integer"},
+                            "role": {"type": "string"}
+                        }
+                    }
+                },
+                "spans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field", "text"],
+                        "properties": {
+                            "field": {"type": "string"},
+                            "text": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}]
+
+STATE_COMP_DOC_INFO_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "produce_judgment_info",
+        "strict": True,
+        "description": "从国家赔偿决定/判决/调解书中抽取元数据、当事人、赔偿请求与计算等要素，未知信息使用空串、0、false 或空数组。",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "meta",
+                "parties",
+                "requests",
+                "findings",
+                "compensation_items",
+                "formula",
+                "amounts",
+                "decision_items",
+                "remedy",
+                "statutes",
+                "spans"
+            ],
+            "properties": {
+                "meta": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "case_system",
+                        "case_subtype",
+                        "doc_type",
+                        "trial_level",
+                        "court",
+                        "case_number",
+                        "judgment_date"
+                    ],
+                    "properties": {
+                        "case_system": {"type": "string"},
+                        "case_subtype": {"type": "string"},
+                        "doc_type": {"type": "string"},
+                        "trial_level": {"type": "string"},
+                        "court": {"type": "string"},
+                        "case_number": {"type": "string"},
+                        "judgment_date": {"type": "string"}
+                    }
+                },
+                "parties": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["claimants", "obligated_org", "agents"],
+                    "properties": {
+                        "claimants": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                        "obligated_org": {"type": "string"},
+                        "agents": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    }
+                },
+                "requests": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["item", "amount_cny", "basis"],
+                        "properties": {
+                            "item": {"type": "string"},
+                            "amount_cny": {"type": "integer"},
+                            "basis": {"type": "string"}
+                        }
+                    }
+                },
+                "findings": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["facts", "court_findings"],
+                    "properties": {
+                        "facts": {"type": "string"},
+                        "court_findings": {"type": "string"}
+                    }
+                },
+                "compensation_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["category", "amount_cny", "calculation"],
+                        "properties": {
+                            "category": {"type": "string"},
+                            "amount_cny": {"type": "integer"},
+                            "calculation": {"type": "string"}
+                        }
+                    }
+                },
+                "formula": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "daily_standard_cny",
+                        "days",
+                        "other_factors",
+                        "explanation"
+                    ],
+                    "properties": {
+                        "daily_standard_cny": {"type": "integer"},
+                        "days": {"type": "integer"},
+                        "other_factors": {"type": "string"},
+                        "explanation": {"type": "string"}
+                    }
+                },
+                "amounts": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["subtotal_cny", "total_cny"],
+                    "properties": {
+                        "subtotal_cny": {"type": "integer"},
+                        "total_cny": {"type": "integer"}
+                    }
+                },
+                "decision_items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["item", "detail"],
+                        "properties": {
+                            "item": {"type": "string"},
+                            "detail": {"type": "string"}
+                        }
+                    }
+                },
+                "remedy": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["reconsideration", "litigation"],
+                    "properties": {
+                        "reconsideration": {"type": "string"},
+                        "litigation": {"type": "string"}
+                    }
+                },
+                "statutes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["law", "article", "clause", "role"],
+                        "properties": {
+                            "law": {"type": "string"},
+                            "article": {"type": "integer"},
+                            "clause": {"type": "integer"},
+                            "role": {"type": "string"}
+                        }
+                    }
+                },
+                "spans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["field", "text"],
+                        "properties": {
+                            "field": {"type": "string"},
+                            "text": {"type": "string"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+}]
+
+DEEPSEEK_DOC_INFO_TOOL = {
+    "刑事": CRIMINAL_DOC_INFO_TOOL,
+    "民事": CIVIL_DOC_INFO_TOOL,
+    "行政": ADMIN_DOC_INFO_TOOL,
+    "执行": ENFORCE_DOC_INFO_TOOL,
+    "国家赔偿": STATE_COMP_DOC_INFO_TOOL
+}
 
 _CN_DIGITS = {"零":0, "〇":0, "○":0, "Ｏ":0, "O":0, "一":1, "二":2, "两":2, "三":3, "四":4, "五":5, "六":6, "七":7, "八":8, "九":9}
 _CN_UNITS = {"十":10, "百":100, "千":1000, "万":10000, "亿":100000000}
@@ -810,6 +1736,175 @@ def _normalize_date_cn(s: str) -> Optional[str]:
         return datetime(y, mo, d).strftime("%Y-%m-%d")
     except Exception:
         return None
+
+
+def _doc_info_template_for(category: str) -> Dict[str, Any]:
+    base = DOC_INFO_TEMPLATES.get(category)
+    if base is None:
+        base = DOC_INFO_TEMPLATES.get("刑事")
+    return copy.deepcopy(base) if base is not None else {}
+
+
+def _resolve_doc_category(case_system: str, doc_type: str) -> str:
+    cs = (case_system or "").strip()
+    dt = (doc_type or "").strip()
+    for key in DOC_INFO_TEMPLATES.keys():
+        if key and (key in cs or key in dt):
+            return key
+    if "赔偿" in dt:
+        return "国家赔偿"
+    if "执行" in dt:
+        return "执行"
+    if "行政" in dt:
+        return "行政"
+    if "民事" in dt:
+        return "民事"
+    return "刑事"
+
+
+def _build_meta_defaults(category: str, case_system: str, case_subtype: str, meta: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    meta = meta or {}
+    return {
+        "case_system": (case_system or category or "").strip(),
+        "case_subtype": (case_subtype or meta.get("case_subtype") or "").strip(),
+        "doc_type": (meta.get("doc_type") or "").strip(),
+        "trial_level": (meta.get("trial_level") or "").strip(),
+        "court": (meta.get("court") or "").strip(),
+        "case_number": (meta.get("case_number") or "").strip(),
+        "judgment_date": (meta.get("judgment_date") or "").strip()
+    }
+
+
+def _apply_meta_defaults(doc: Dict[str, Any], defaults: Dict[str, str]) -> Dict[str, Any]:
+    meta = doc.get("meta")
+    if isinstance(meta, dict):
+        for key, value in defaults.items():
+            if key in meta:
+                meta[key] = value
+    return doc
+
+
+def _build_empty_doc_info(category: str, case_system: str, case_subtype: str, meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    defaults = _build_meta_defaults(category, case_system, case_subtype, meta)
+    doc = _doc_info_template_for(category)
+    return _apply_meta_defaults(doc, defaults)
+
+
+def _heuristic_criminal_doc(case_system: str, case_subtype: str, meta: Optional[Dict[str, Any]], heuristic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    doc = _build_empty_doc_info("刑事", case_system, case_subtype, meta)
+    if not heuristic:
+        return doc
+
+    parties = doc.get("parties") if isinstance(doc.get("parties"), dict) else {}
+    if isinstance(parties, dict):
+        proc = heuristic.get("procuratorate") if isinstance(heuristic, dict) else None
+        parties["procuratorate"] = (proc or "").strip()
+        prosecutors = heuristic.get("prosecutors") if isinstance(heuristic, dict) else None
+        if isinstance(prosecutors, list):
+            parties["prosecutors"] = [p for p in prosecutors if isinstance(p, str) and p.strip()]
+        lawyers = heuristic.get("lawyers") if isinstance(heuristic, dict) else None
+        if isinstance(lawyers, list):
+            parties["lawyers"] = [l for l in lawyers if isinstance(l, str) and l.strip()]
+        defendants = []
+        for item in heuristic.get("defendants", []):
+            if not isinstance(item, dict):
+                continue
+            detention = item.get("detention") if isinstance(item.get("detention"), dict) else {}
+            defendants.append({
+                "name_masked": (item.get("name_masked") or "").strip(),
+                "aka": (item.get("aka") or "").strip(),
+                "gender": (item.get("gender") or "").strip(),
+                "dob": (item.get("dob") or "").strip(),
+                "address": (item.get("address") or "").strip(),
+                "role": (item.get("role") or "被告人").strip(),
+                "detention": {
+                    "brought_in": "",
+                    "detained": (detention.get("detained") or "").strip() if isinstance(detention, dict) else "",
+                    "arrested": (detention.get("arrested") or "").strip() if isinstance(detention, dict) else "",
+                    "custody": (detention.get("custody") or "").strip() if isinstance(detention, dict) else ""
+                }
+            })
+            disp = item.get("disposition") if isinstance(item.get("disposition"), dict) else {}
+            if disp and isinstance(doc.get("disposition"), dict):
+                disposition = doc["disposition"]
+                disposition["offense"] = (disp.get("offense") or disposition.get("offense") or "").strip()
+                disposition["imprisonment_text"] = (disp.get("imprisonment_desc") or disposition.get("imprisonment_text") or "").strip()
+                if disp.get("imprisonment_months") is not None:
+                    try:
+                        disposition["imprisonment_months"] = int(disp.get("imprisonment_months"))
+                    except Exception:
+                        pass
+                if disp.get("fine_amount") is not None:
+                    try:
+                        disposition["fine_amount"] = int(disp.get("fine_amount"))
+                    except Exception:
+                        pass
+                if disp.get("detention_offset") is not None:
+                    disposition["detention_offset"] = bool(disp.get("detention_offset"))
+                term_start = disp.get("term_start")
+                term_end = disp.get("term_end")
+                if term_start:
+                    disposition["term_start"] = str(term_start)
+                if term_end:
+                    disposition["term_end"] = str(term_end)
+        parties["defendants"] = defendants
+
+    return doc
+
+
+def _merge_doc_info_dict(template: Any, fallback: Any, updates: Any) -> Any:
+    if isinstance(template, dict):
+        result: Dict[str, Any] = {}
+        fb = fallback if isinstance(fallback, dict) else {}
+        up = updates if isinstance(updates, dict) else {}
+        for key, tmpl_val in template.items():
+            fb_val = fb.get(key, copy.deepcopy(tmpl_val))
+            up_val = up.get(key) if key in up else None
+            result[key] = _merge_doc_info_dict(tmpl_val, fb_val, up_val)
+        return result
+    if isinstance(template, list):
+        if isinstance(updates, list) and updates:
+            if template and isinstance(template[0], dict):
+                tmpl_item = template[0]
+                return [_merge_doc_info_dict(tmpl_item, tmpl_item, item) for item in updates if isinstance(item, dict)]
+            return [item for item in updates if item is not None]
+        if isinstance(fallback, list) and fallback:
+            return fallback
+        return []
+    if updates is None:
+        return fallback if fallback is not None else copy.deepcopy(template)
+    if isinstance(template, str):
+        if isinstance(updates, str) and updates.strip():
+            return updates.strip()
+        if isinstance(fallback, str):
+            return fallback
+        return template
+    if isinstance(updates, str):
+        return updates.strip()
+    return updates
+
+
+def _merge_doc_info(category: str, fallback: Dict[str, Any], updates: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    template = _doc_info_template_for(category)
+    if updates is None:
+        return _merge_doc_info_dict(template, fallback, {})
+    return _merge_doc_info_dict(template, fallback, updates)
+
+
+def _normalize_deepseek_doc_info(raw: Dict[str, Any], category: str) -> Dict[str, Any]:
+    template = _doc_info_template_for(category)
+    return _merge_doc_info_dict(template, template, raw if isinstance(raw, dict) else {})
+
+
+def _get_deepseek_tool(category: str):
+    return DEEPSEEK_DOC_INFO_TOOL.get(category) or DEEPSEEK_DOC_INFO_TOOL.get("刑事")
+
+
+def _get_deepseek_example(category: str) -> str:
+    example = DEEPSEEK_JSON_EXAMPLE.get(category)
+    if example is None:
+        example = DEEPSEEK_JSON_EXAMPLE.get("刑事", "{}")
+    return example
 
 
 def _extract_section_by_names(chunks: List[Dict[str, Any]], names: List[str]) -> str:
@@ -1277,25 +2372,27 @@ def _build_deepseek_client(base_url: str):
         return None
 
 
-def _call_deepseek_doc_info(full_text: str, retries: int = 3, timeout_s: float = 60.0) -> Optional[Dict[str, Any]]:
+def _call_deepseek_doc_info(full_text: str, category: str, doc_type: str, retries: int = 3, timeout_s: float = 60.0) -> Optional[Dict[str, Any]]:
     if not full_text:
         return None
 
     backoff = 1.6
     last_error: Optional[Exception] = None
+    tool = _get_deepseek_tool(category)
+    example = _get_deepseek_example(category)
 
     beta_client = _build_deepseek_client(DEEPSEEK_BETA_BASE_URL)
-    if beta_client:
+    if beta_client and tool:
         messages = [
             {"role": "system", "content": "你是中国判决书结构化抽取助手。请严格按照函数 schema 返回数据，未知字段使用空串、0、false 或空数组。"},
-            {"role": "user", "content": "以下为分段整理后的判决书，请抽取涉案机关、检察官、被告人、辩护人和裁判信息：\n" + full_text}
+            {"role": "user", "content": "以下为分段整理后的判决书，请抽取结构化信息：\n" + full_text}
         ]
         for attempt in range(retries):
             try:
                 rsp = beta_client.chat.completions.create(
                     model=DEEPSEEK_MODEL,
                     messages=messages,
-                    tools=DEEPSEEK_DOC_INFO_TOOL,
+                    tools=tool,
                     tool_choice={"type": "function", "function": {"name": "produce_judgment_info"}},
                     timeout=timeout_s,
                     max_tokens=2000
@@ -1317,16 +2414,15 @@ def _call_deepseek_doc_info(full_text: str, retries: int = 3, timeout_s: float =
             print(f"[deep_extract] DeepSeek 调用失败: {last_error}", file=sys.stderr)
         return None
 
-    system_prompt = (
-        "只输出 JSON 对象，不要解释文字。所有字段必须存在，缺失请用空串、0、false 或空数组。"
-    )
+    system_prompt = "只输出 JSON 对象，不要解释文字。所有字段必须存在，缺失请用空串、0、false 或空数组。"
     messages = [
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": (
                 "请根据以下判决书内容抽取结构化信息，并返回与示例结构相同的 JSON：\n"
-                f"示例结构：{DEEPSEEK_JSON_EXAMPLE}\n\n"
+                f"文书类型：{doc_type or category}\n"
+                f"示例结构：{example}\n\n"
                 + full_text
             )
         }
@@ -1355,241 +2451,7 @@ def _call_deepseek_doc_info(full_text: str, retries: int = 3, timeout_s: float =
     return None
 
 
-def _ensure_str_list(values: Any) -> List[str]:
-    if not isinstance(values, list):
-        return []
-    out: List[str] = []
-    for item in values:
-        if isinstance(item, str):
-            clean = item.strip()
-            if clean and clean not in out:
-                out.append(clean)
-    return out
-
-
-def _to_bool(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if not v:
-            return False
-        if v in {"是", "有", "true", "t", "yes", "y", "1"}:
-            return True
-        if v in {"否", "无", "false", "f", "no", "n", "0"}:
-            return False
-    return False
-
-
-def _parse_int_field(value: Any) -> Optional[int]:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        try:
-            return int(value)
-        except Exception:
-            return None
-    if isinstance(value, str):
-        clean = value.strip()
-        if not clean:
-            return None
-        if re.fullmatch(r"-?\d+", clean):
-            try:
-                return int(clean)
-            except Exception:
-                return None
-        parsed = _cn_simple_num_to_int(clean)
-        if parsed is not None:
-            return parsed
-        try:
-            return int(float(clean))
-        except Exception:
-            return None
-    return None
-
-
-def _normalize_date_field(value: Any) -> Optional[str]:
-    if not value:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    iso = _normalize_date_cn(text)
-    if iso:
-        return iso
-    m = re.search(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", text)
-    if m:
-        try:
-            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    return text
-
-
-def _normalize_deepseek_doc_info(raw: Dict[str, Any]) -> Dict[str, Any]:
-    doc_info = {
-        "procuratorate": (raw.get("procuratorate") or "").strip() or None,
-        "prosecutors": _ensure_str_list(raw.get("prosecutors")),
-        "defendants": [],
-        "lawyers": _ensure_str_list(raw.get("lawyers")),
-        "dispute_focus": _ensure_str_list(raw.get("dispute_focus")),
-        "opinion_summary": _ensure_str_list(raw.get("opinion_summary"))
-    }
-
-    defendants = raw.get("defendants")
-    if isinstance(defendants, list):
-        for item in defendants:
-            if not isinstance(item, dict):
-                continue
-            aka = (item.get("aka") or "").strip()
-            address = (item.get("address") or "").strip()
-            gender = (item.get("gender") or "").strip()
-            role = (item.get("role") or "").strip() or "被告人"
-            priors = _ensure_str_list(item.get("prior_convictions"))
-            detention_raw = item.get("detention") if isinstance(item.get("detention"), dict) else {}
-            detention = {}
-            for key in ["detained", "arrested", "custody", "release"]:
-                val = None
-                if isinstance(detention_raw, dict):
-                    val = detention_raw.get(key)
-                norm = _normalize_date_field(val)
-                if norm:
-                    detention[key] = norm
-            disposition_raw = item.get("disposition") if isinstance(item.get("disposition"), dict) else {}
-            imprisonment_desc = (disposition_raw.get("imprisonment_desc") or "").strip()
-            imprisonment_months = _parse_int_field(disposition_raw.get("imprisonment_months"))
-            if imprisonment_months is None and imprisonment_desc:
-                parsed = _parse_term_to_months(imprisonment_desc)
-                if parsed is not None:
-                    imprisonment_months = parsed
-            fine_amount = _parse_int_field(disposition_raw.get("fine_amount"))
-            conf_amount = _parse_int_field(disposition_raw.get("confiscation_amount"))
-            disp = {
-                "offense": (disposition_raw.get("offense") or "").strip() or None,
-                "imprisonment_desc": imprisonment_desc or None,
-                "imprisonment_months": imprisonment_months,
-                "fine_amount": fine_amount,
-                "confiscation_amount": conf_amount,
-                "detention_offset": _to_bool(disposition_raw.get("detention_offset")),
-                "term_start": _normalize_date_field(disposition_raw.get("term_start")),
-                "term_end": _normalize_date_field(disposition_raw.get("term_end")),
-                "probation": _to_bool(disposition_raw.get("probation"))
-            }
-            factors_raw = item.get("factors") if isinstance(item.get("factors"), dict) else {}
-            factors = {
-                "self_surrender": _to_bool(factors_raw.get("self_surrender")),
-                "plead_guilty": _to_bool(factors_raw.get("plead_guilty")),
-                "accessory": _to_bool(factors_raw.get("accessory")),
-                "recidivist": _to_bool(factors_raw.get("recidivist")),
-                "confession": _to_bool(factors_raw.get("confession"))
-            }
-            doc_info["defendants"].append({
-                "name_masked": (item.get("name_masked") or "").strip(),
-                "aka": aka or None,
-                "gender": gender or None,
-                "dob": _normalize_date_field(item.get("dob")),
-                "address": address or None,
-                "prior_convictions": priors or None,
-                "detention": detention or None,
-                "role": role,
-                "disposition": disp,
-                "factors": factors
-            })
-
-    return doc_info
-
-
-def _merge_unique_list(a: Optional[List[str]], b: Optional[List[str]]) -> List[str]:
-    result: List[str] = []
-    for source in (a or [], b or []):
-        for item in source:
-            if item and item not in result:
-                result.append(item)
-    return result
-
-
-def _merge_defendant_entry(target: Dict[str, Any], source: Dict[str, Any]) -> None:
-    for field in ["name_masked", "aka", "gender", "dob", "address", "role"]:
-        val = source.get(field)
-        if val in (None, ""):
-            continue
-        if not target.get(field):
-            target[field] = val
-
-    if source.get("prior_convictions"):
-        existing = target.get("prior_convictions") or []
-        if not isinstance(existing, list):
-            existing = []
-        for item in source["prior_convictions"]:
-            if item not in existing:
-                existing.append(item)
-        target["prior_convictions"] = existing or None
-
-    if source.get("detention"):
-        dest = target.get("detention") or {}
-        if not isinstance(dest, dict):
-            dest = {}
-        for k, v in source["detention"].items():
-            if v and k not in dest:
-                dest[k] = v
-        target["detention"] = dest or None
-
-    disp_src = source.get("disposition") or {}
-    if disp_src:
-        disp_dst = target.get("disposition") or {}
-        for k, v in disp_src.items():
-            if v in (None, "", []):
-                continue
-            if k not in disp_dst or not disp_dst.get(k):
-                disp_dst[k] = v
-        target["disposition"] = disp_dst or None
-
-    fac_src = source.get("factors") or {}
-    if fac_src:
-        fac_dst = target.get("factors") or {}
-        for k, v in fac_src.items():
-            if v is True:
-                fac_dst[k] = True
-        target["factors"] = fac_dst
-
-
-def _merge_defendants(a: Optional[List[Dict[str, Any]]], b: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    result = [copy.deepcopy(x) for x in (a or [])]
-    index = {}
-    for idx, item in enumerate(result):
-        key = (item.get("name_masked") or "", item.get("aka") or "")
-        index[key] = idx
-
-    for src in b or []:
-        key = (src.get("name_masked") or "", src.get("aka") or "")
-        if key in index:
-            _merge_defendant_entry(result[index[key]], src)
-        else:
-            result.append(copy.deepcopy(src))
-            index[key] = len(result) - 1
-    return result
-
-
-def _merge_doc_infos(primary: Dict[str, Any], extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not extra:
-        return primary
-
-    merged = copy.deepcopy(primary)
-    if extra.get("procuratorate"):
-        merged["procuratorate"] = extra["procuratorate"]
-    merged["prosecutors"] = _merge_unique_list(primary.get("prosecutors"), extra.get("prosecutors"))
-    merged["lawyers"] = _merge_unique_list(primary.get("lawyers"), extra.get("lawyers"))
-    merged["dispute_focus"] = _merge_unique_list(primary.get("dispute_focus"), extra.get("dispute_focus"))
-    merged["opinion_summary"] = _merge_unique_list(primary.get("opinion_summary"), extra.get("opinion_summary"))
-    merged["defendants"] = _merge_defendants(primary.get("defendants"), extra.get("defendants"))
-    return merged
-
-
-def _deepseek_doc_info_from_chunks(chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _deepseek_doc_info_from_chunks(chunks: List[Dict[str, Any]], category: str, doc_type: str) -> Optional[Dict[str, Any]]:
     if OpenAI is None or not DEEPSEEK_API_KEY:
         return None
     ordered = sorted(chunks, key=lambda x: x.get("chunk_index", 0))
@@ -1601,22 +2463,34 @@ def _deepseek_doc_info_from_chunks(chunks: List[Dict[str, Any]]) -> Optional[Dic
     prompt = "\n\n".join(parts).strip()
     if not prompt:
         return None
-    raw = _call_deepseek_doc_info(prompt)
+    raw = _call_deepseek_doc_info(prompt, category, doc_type)
     if not raw or not isinstance(raw, dict):
         return None
     try:
-        return _normalize_deepseek_doc_info(raw)
+        return _normalize_deepseek_doc_info(raw, category)
     except Exception as exc:
         print(f"[deep_extract] DeepSeek 结果解析失败: {exc}", file=sys.stderr)
         return None
 
 
-def deep_extract_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    heuristic = _heuristic_deep_extract(chunks)
-    deepseek = _deepseek_doc_info_from_chunks(chunks)
+def deep_extract_from_chunks(
+    chunks: List[Dict[str, Any]],
+    case_system: str = "",
+    case_subtype: str = "",
+    meta: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    doc_type = (meta or {}).get("doc_type") or ""
+    category = _resolve_doc_category(case_system, doc_type)
+    if category == "刑事":
+        heuristic_raw = _heuristic_deep_extract(chunks)
+        fallback = _heuristic_criminal_doc(case_system, case_subtype, meta, heuristic_raw)
+    else:
+        fallback = _build_empty_doc_info(category, case_system, case_subtype, meta)
+
+    deepseek = _deepseek_doc_info_from_chunks(chunks, category, doc_type)
     if not deepseek:
-        return heuristic
-    return _merge_doc_infos(heuristic, deepseek)
+        return fallback
+    return _merge_doc_info(category, fallback, deepseek)
 
 
 def attach_doc_info(chunks: List[Dict[str, Any]], doc_info: Dict[str, Any], mode: str = "first") -> List[Dict[str, Any]]:
@@ -2250,7 +3124,7 @@ def process_one_file(root_dir, out_dir, path, min_chars, max_chars, overlap):
         c["chunk_index"] = idx
         if "section" not in c:
             c["section"] = c.get("section_span")
-    doc_info = deep_extract_from_chunks(chunks)
+    doc_info = deep_extract_from_chunks(chunks, case_system=system, case_subtype=subtype, meta=meta)
     chunks = attach_doc_info(chunks, doc_info, mode="all")
 
     rel_path = os.path.relpath(path, root_dir).replace("\\","/")
