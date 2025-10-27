@@ -16,11 +16,19 @@ python judgment_chunk.py --in_dir 文书 --out_dir chunks \
 import os
 import re
 import json
+import sys
+import time
+import copy
 import argparse
 from datetime import datetime
 from hashlib import sha1
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    from openai import OpenAI  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    OpenAI = None  # type: ignore
 
 # ---------- 基础清洗 ----------
 def normalize_text(t: str) -> str:
@@ -531,6 +539,180 @@ def extract_light_meta(text: str, file_path: str = ""):
 # ===== 深度信息抽取：最优实现（可直接粘贴） =====
 # 仅用标准库；不改你现有切块逻辑。主入口：deep_extract_from_chunks(chunks)
 # 若需要把 doc 级结果挂到 chunk，可调用 attach_doc_info(chunks, doc_info, mode="first"/"all")
+
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_BETA_BASE_URL = os.getenv("DEEPSEEK_BETA_BASE_URL", "https://api.deepseek.com/beta")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+
+DEEPSEEK_JSON_EXAMPLE = json.dumps({
+    "procuratorate": "",
+    "prosecutors": [],
+    "defendants": [
+        {
+            "name_masked": "",
+            "aka": "",
+            "gender": "",
+            "dob": "",
+            "address": "",
+            "role": "被告人",
+            "prior_convictions": [],
+            "detention": {
+                "detained": "",
+                "arrested": "",
+                "custody": "",
+                "release": ""
+            },
+            "disposition": {
+                "offense": "",
+                "imprisonment_desc": "",
+                "imprisonment_months": 0,
+                "fine_amount": 0,
+                "confiscation_amount": 0,
+                "detention_offset": False,
+                "term_start": "",
+                "term_end": "",
+                "probation": False
+            },
+            "factors": {
+                "self_surrender": False,
+                "plead_guilty": False,
+                "accessory": False,
+                "recidivist": False,
+                "confession": False
+            }
+        }
+    ],
+    "lawyers": [],
+    "dispute_focus": [],
+    "opinion_summary": []
+}, ensure_ascii=False)
+
+DEEPSEEK_DOC_INFO_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "produce_judgment_info",
+        "strict": True,
+        "description": "从判决书中抽取涉案机关、检察官、被告人、辩护人以及判决结果等要素，未知信息使用空串、0、false 或空数组。",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "procuratorate",
+                "prosecutors",
+                "defendants",
+                "lawyers",
+                "dispute_focus",
+                "opinion_summary"
+            ],
+            "properties": {
+                "procuratorate": {"type": "string"},
+                "prosecutors": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "lawyers": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "dispute_focus": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "opinion_summary": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                },
+                "defendants": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "name_masked",
+                            "aka",
+                            "gender",
+                            "dob",
+                            "address",
+                            "role",
+                            "prior_convictions",
+                            "detention",
+                            "disposition",
+                            "factors"
+                        ],
+                        "properties": {
+                            "name_masked": {"type": "string"},
+                            "aka": {"type": "string"},
+                            "gender": {"type": "string"},
+                            "dob": {"type": "string"},
+                            "address": {"type": "string"},
+                            "role": {"type": "string"},
+                            "prior_convictions": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            },
+                            "detention": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["detained", "arrested", "custody", "release"],
+                                "properties": {
+                                    "detained": {"type": "string"},
+                                    "arrested": {"type": "string"},
+                                    "custody": {"type": "string"},
+                                    "release": {"type": "string"}
+                                }
+                            },
+                            "disposition": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [
+                                    "offense",
+                                    "imprisonment_desc",
+                                    "imprisonment_months",
+                                    "fine_amount",
+                                    "confiscation_amount",
+                                    "detention_offset",
+                                    "term_start",
+                                    "term_end",
+                                    "probation"
+                                ],
+                                "properties": {
+                                    "offense": {"type": "string"},
+                                    "imprisonment_desc": {"type": "string"},
+                                    "imprisonment_months": {"type": "integer"},
+                                    "fine_amount": {"type": "integer"},
+                                    "confiscation_amount": {"type": "integer"},
+                                    "detention_offset": {"type": "boolean"},
+                                    "term_start": {"type": "string"},
+                                    "term_end": {"type": "string"},
+                                    "probation": {"type": "boolean"}
+                                }
+                            },
+                            "factors": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": [
+                                    "self_surrender",
+                                    "plead_guilty",
+                                    "accessory",
+                                    "recidivist",
+                                    "confession"
+                                ],
+                                "properties": {
+                                    "self_surrender": {"type": "boolean"},
+                                    "plead_guilty": {"type": "boolean"},
+                                    "accessory": {"type": "boolean"},
+                                    "recidivist": {"type": "boolean"},
+                                    "confession": {"type": "boolean"}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}]
 
 _CN_DIGITS = {"零":0, "〇":0, "○":0, "Ｏ":0, "O":0, "一":1, "二":2, "两":2, "三":3, "四":4, "五":5, "六":6, "七":7, "八":8, "九":9}
 _CN_UNITS = {"十":10, "百":100, "千":1000, "万":10000, "亿":100000000}
@@ -1057,7 +1239,7 @@ def _fill_aka(fulltext: str, defendants: List[Dict[str, Any]]) -> None:
             d["aka"] = m.group(0)
 
 
-def deep_extract_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _heuristic_deep_extract(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     intro = _extract_section_by_names(chunks, ["开头","案号行","当事人信息","审理经过"])
     defense = _extract_section_by_names(chunks, ["被告人辩解与辩护意见","辩护意见"])
     opinion = _extract_section_by_names(chunks, ["理由","本院认为"])
@@ -1081,6 +1263,360 @@ def deep_extract_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         "dispute_focus": focus,
         "opinion_summary": op_sum
     }
+
+
+def _build_deepseek_client(base_url: str):
+    if OpenAI is None:
+        return None
+    if not DEEPSEEK_API_KEY:
+        return None
+    try:
+        return OpenAI(base_url=base_url, api_key=DEEPSEEK_API_KEY)
+    except Exception as exc:
+        print(f"[deep_extract] 无法初始化 DeepSeek 客户端: {exc}", file=sys.stderr)
+        return None
+
+
+def _call_deepseek_doc_info(full_text: str, retries: int = 3, timeout_s: float = 60.0) -> Optional[Dict[str, Any]]:
+    if not full_text:
+        return None
+
+    backoff = 1.6
+    last_error: Optional[Exception] = None
+
+    beta_client = _build_deepseek_client(DEEPSEEK_BETA_BASE_URL)
+    if beta_client:
+        messages = [
+            {"role": "system", "content": "你是中国判决书结构化抽取助手。请严格按照函数 schema 返回数据，未知字段使用空串、0、false 或空数组。"},
+            {"role": "user", "content": "以下为分段整理后的判决书，请抽取涉案机关、检察官、被告人、辩护人和裁判信息：\n" + full_text}
+        ]
+        for attempt in range(retries):
+            try:
+                rsp = beta_client.chat.completions.create(
+                    model=DEEPSEEK_MODEL,
+                    messages=messages,
+                    tools=DEEPSEEK_DOC_INFO_TOOL,
+                    tool_choice={"type": "function", "function": {"name": "produce_judgment_info"}},
+                    timeout=timeout_s,
+                    max_tokens=2000
+                )
+                msg = rsp.choices[0].message
+                if getattr(msg, "tool_calls", None):
+                    payload = msg.tool_calls[0].function.arguments
+                    if payload:
+                        return json.loads(payload)
+            except Exception as exc:
+                last_error = exc
+                if attempt == retries - 1:
+                    break
+                time.sleep(backoff ** (attempt + 1))
+
+    client = _build_deepseek_client(DEEPSEEK_BASE_URL)
+    if not client:
+        if last_error:
+            print(f"[deep_extract] DeepSeek 调用失败: {last_error}", file=sys.stderr)
+        return None
+
+    system_prompt = (
+        "只输出 JSON 对象，不要解释文字。所有字段必须存在，缺失请用空串、0、false 或空数组。"
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": (
+                "请根据以下判决书内容抽取结构化信息，并返回与示例结构相同的 JSON：\n"
+                f"示例结构：{DEEPSEEK_JSON_EXAMPLE}\n\n"
+                + full_text
+            )
+        }
+    ]
+
+    for attempt in range(retries):
+        try:
+            rsp = client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=messages,
+                response_format={"type": "json_object"},
+                timeout=timeout_s,
+                max_tokens=2000
+            )
+            content = rsp.choices[0].message.content or ""
+            if content.strip():
+                return json.loads(content)
+        except Exception as exc:
+            last_error = exc
+            if attempt == retries - 1:
+                break
+            time.sleep(backoff ** (attempt + 1))
+
+    if last_error:
+        print(f"[deep_extract] DeepSeek 调用失败: {last_error}", file=sys.stderr)
+    return None
+
+
+def _ensure_str_list(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    for item in values:
+        if isinstance(item, str):
+            clean = item.strip()
+            if clean and clean not in out:
+                out.append(clean)
+    return out
+
+
+def _to_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if not v:
+            return False
+        if v in {"是", "有", "true", "t", "yes", "y", "1"}:
+            return True
+        if v in {"否", "无", "false", "f", "no", "n", "0"}:
+            return False
+    return False
+
+
+def _parse_int_field(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except Exception:
+            return None
+    if isinstance(value, str):
+        clean = value.strip()
+        if not clean:
+            return None
+        if re.fullmatch(r"-?\d+", clean):
+            try:
+                return int(clean)
+            except Exception:
+                return None
+        parsed = _cn_simple_num_to_int(clean)
+        if parsed is not None:
+            return parsed
+        try:
+            return int(float(clean))
+        except Exception:
+            return None
+    return None
+
+
+def _normalize_date_field(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    iso = _normalize_date_cn(text)
+    if iso:
+        return iso
+    m = re.search(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return text
+
+
+def _normalize_deepseek_doc_info(raw: Dict[str, Any]) -> Dict[str, Any]:
+    doc_info = {
+        "procuratorate": (raw.get("procuratorate") or "").strip() or None,
+        "prosecutors": _ensure_str_list(raw.get("prosecutors")),
+        "defendants": [],
+        "lawyers": _ensure_str_list(raw.get("lawyers")),
+        "dispute_focus": _ensure_str_list(raw.get("dispute_focus")),
+        "opinion_summary": _ensure_str_list(raw.get("opinion_summary"))
+    }
+
+    defendants = raw.get("defendants")
+    if isinstance(defendants, list):
+        for item in defendants:
+            if not isinstance(item, dict):
+                continue
+            aka = (item.get("aka") or "").strip()
+            address = (item.get("address") or "").strip()
+            gender = (item.get("gender") or "").strip()
+            role = (item.get("role") or "").strip() or "被告人"
+            priors = _ensure_str_list(item.get("prior_convictions"))
+            detention_raw = item.get("detention") if isinstance(item.get("detention"), dict) else {}
+            detention = {}
+            for key in ["detained", "arrested", "custody", "release"]:
+                val = None
+                if isinstance(detention_raw, dict):
+                    val = detention_raw.get(key)
+                norm = _normalize_date_field(val)
+                if norm:
+                    detention[key] = norm
+            disposition_raw = item.get("disposition") if isinstance(item.get("disposition"), dict) else {}
+            imprisonment_desc = (disposition_raw.get("imprisonment_desc") or "").strip()
+            imprisonment_months = _parse_int_field(disposition_raw.get("imprisonment_months"))
+            if imprisonment_months is None and imprisonment_desc:
+                parsed = _parse_term_to_months(imprisonment_desc)
+                if parsed is not None:
+                    imprisonment_months = parsed
+            fine_amount = _parse_int_field(disposition_raw.get("fine_amount"))
+            conf_amount = _parse_int_field(disposition_raw.get("confiscation_amount"))
+            disp = {
+                "offense": (disposition_raw.get("offense") or "").strip() or None,
+                "imprisonment_desc": imprisonment_desc or None,
+                "imprisonment_months": imprisonment_months,
+                "fine_amount": fine_amount,
+                "confiscation_amount": conf_amount,
+                "detention_offset": _to_bool(disposition_raw.get("detention_offset")),
+                "term_start": _normalize_date_field(disposition_raw.get("term_start")),
+                "term_end": _normalize_date_field(disposition_raw.get("term_end")),
+                "probation": _to_bool(disposition_raw.get("probation"))
+            }
+            factors_raw = item.get("factors") if isinstance(item.get("factors"), dict) else {}
+            factors = {
+                "self_surrender": _to_bool(factors_raw.get("self_surrender")),
+                "plead_guilty": _to_bool(factors_raw.get("plead_guilty")),
+                "accessory": _to_bool(factors_raw.get("accessory")),
+                "recidivist": _to_bool(factors_raw.get("recidivist")),
+                "confession": _to_bool(factors_raw.get("confession"))
+            }
+            doc_info["defendants"].append({
+                "name_masked": (item.get("name_masked") or "").strip(),
+                "aka": aka or None,
+                "gender": gender or None,
+                "dob": _normalize_date_field(item.get("dob")),
+                "address": address or None,
+                "prior_convictions": priors or None,
+                "detention": detention or None,
+                "role": role,
+                "disposition": disp,
+                "factors": factors
+            })
+
+    return doc_info
+
+
+def _merge_unique_list(a: Optional[List[str]], b: Optional[List[str]]) -> List[str]:
+    result: List[str] = []
+    for source in (a or [], b or []):
+        for item in source:
+            if item and item not in result:
+                result.append(item)
+    return result
+
+
+def _merge_defendant_entry(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+    for field in ["name_masked", "aka", "gender", "dob", "address", "role"]:
+        val = source.get(field)
+        if val in (None, ""):
+            continue
+        if not target.get(field):
+            target[field] = val
+
+    if source.get("prior_convictions"):
+        existing = target.get("prior_convictions") or []
+        if not isinstance(existing, list):
+            existing = []
+        for item in source["prior_convictions"]:
+            if item not in existing:
+                existing.append(item)
+        target["prior_convictions"] = existing or None
+
+    if source.get("detention"):
+        dest = target.get("detention") or {}
+        if not isinstance(dest, dict):
+            dest = {}
+        for k, v in source["detention"].items():
+            if v and k not in dest:
+                dest[k] = v
+        target["detention"] = dest or None
+
+    disp_src = source.get("disposition") or {}
+    if disp_src:
+        disp_dst = target.get("disposition") or {}
+        for k, v in disp_src.items():
+            if v in (None, "", []):
+                continue
+            if k not in disp_dst or not disp_dst.get(k):
+                disp_dst[k] = v
+        target["disposition"] = disp_dst or None
+
+    fac_src = source.get("factors") or {}
+    if fac_src:
+        fac_dst = target.get("factors") or {}
+        for k, v in fac_src.items():
+            if v is True:
+                fac_dst[k] = True
+        target["factors"] = fac_dst
+
+
+def _merge_defendants(a: Optional[List[Dict[str, Any]]], b: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    result = [copy.deepcopy(x) for x in (a or [])]
+    index = {}
+    for idx, item in enumerate(result):
+        key = (item.get("name_masked") or "", item.get("aka") or "")
+        index[key] = idx
+
+    for src in b or []:
+        key = (src.get("name_masked") or "", src.get("aka") or "")
+        if key in index:
+            _merge_defendant_entry(result[index[key]], src)
+        else:
+            result.append(copy.deepcopy(src))
+            index[key] = len(result) - 1
+    return result
+
+
+def _merge_doc_infos(primary: Dict[str, Any], extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not extra:
+        return primary
+
+    merged = copy.deepcopy(primary)
+    if extra.get("procuratorate"):
+        merged["procuratorate"] = extra["procuratorate"]
+    merged["prosecutors"] = _merge_unique_list(primary.get("prosecutors"), extra.get("prosecutors"))
+    merged["lawyers"] = _merge_unique_list(primary.get("lawyers"), extra.get("lawyers"))
+    merged["dispute_focus"] = _merge_unique_list(primary.get("dispute_focus"), extra.get("dispute_focus"))
+    merged["opinion_summary"] = _merge_unique_list(primary.get("opinion_summary"), extra.get("opinion_summary"))
+    merged["defendants"] = _merge_defendants(primary.get("defendants"), extra.get("defendants"))
+    return merged
+
+
+def _deepseek_doc_info_from_chunks(chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if OpenAI is None or not DEEPSEEK_API_KEY:
+        return None
+    ordered = sorted(chunks, key=lambda x: x.get("chunk_index", 0))
+    parts = []
+    for c in ordered:
+        sec = str(c.get("section") or c.get("section_span") or "").strip() or "未知段落"
+        text = c.get("text") or ""
+        parts.append(f"【{sec}】\n{text}")
+    prompt = "\n\n".join(parts).strip()
+    if not prompt:
+        return None
+    raw = _call_deepseek_doc_info(prompt)
+    if not raw or not isinstance(raw, dict):
+        return None
+    try:
+        return _normalize_deepseek_doc_info(raw)
+    except Exception as exc:
+        print(f"[deep_extract] DeepSeek 结果解析失败: {exc}", file=sys.stderr)
+        return None
+
+
+def deep_extract_from_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+    heuristic = _heuristic_deep_extract(chunks)
+    deepseek = _deepseek_doc_info_from_chunks(chunks)
+    if not deepseek:
+        return heuristic
+    return _merge_doc_infos(heuristic, deepseek)
 
 
 def attach_doc_info(chunks: List[Dict[str, Any]], doc_info: Dict[str, Any], mode: str = "first") -> List[Dict[str, Any]]:
