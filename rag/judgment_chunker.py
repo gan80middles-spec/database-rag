@@ -20,6 +20,11 @@ import sys
 import time
 import copy
 import argparse
+
+try:
+    from tqdm import tqdm  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    tqdm = None  # type: ignore
 from datetime import datetime
 from hashlib import sha1
 from typing import Any, Dict, List, Optional
@@ -3184,16 +3189,24 @@ def main():
         with ThreadPoolExecutor(max_workers=args.workers) as ex:
             futs = [ex.submit(process_one_file, args.in_dir, args.out_dir, f,
                               args.min_chars, args.max_chars, args.overlap) for f in files]
-            for fu in as_completed(futs):
-                r = fu.result()
-                if r["ok"]:
-                    total_ok += 1
-                    print(f"[OK] {r['file']} → {r['out']} ({r['chunks']} 块)")
-                else:
-                    total_fail += 1
-                    print(f"[FAIL] {r['file']} → {r.get('reason','unknown')}")
+            progress = tqdm(total=len(files), desc="Processing", unit="file") if tqdm else None
+            try:
+                for fu in as_completed(futs):
+                    r = fu.result()
+                    if progress:
+                        progress.update(1)
+                    if r["ok"]:
+                        total_ok += 1
+                        print(f"[OK] {r['file']} → {r['out']} ({r['chunks']} 块)")
+                    else:
+                        total_fail += 1
+                        print(f"[FAIL] {r['file']} → {r.get('reason','unknown')}")
+            finally:
+                if progress:
+                    progress.close()
     else:
-        for f in files:
+        iterator = tqdm(files, desc="Processing", unit="file") if tqdm else files
+        for f in iterator:
             r = process_one_file(args.in_dir, args.out_dir, f,
                                  args.min_chars, args.max_chars, args.overlap)
             if r["ok"]:
