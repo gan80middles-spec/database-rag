@@ -50,7 +50,7 @@ def encode_batches(model: SentenceTransformer, texts: List[str], batch_size: int
         vec = model.encode(
             sub,
             normalize_embeddings=True,
-            batch_size=len(sub),
+            batch_size=batch_size,
             show_progress_bar=False,
         )
         embeddings.extend(v.tolist() for v in vec)
@@ -94,10 +94,9 @@ def ensure_milvus_collection(
             FieldSchema(name="version_date", dtype=DataType.VARCHAR, max_length=16),
             FieldSchema(name="validity_status", dtype=DataType.VARCHAR, max_length=16),
             FieldSchema(name="chunk_index", dtype=DataType.INT64),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=4096),
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
         ]
-        schema = CollectionSchema(fields, description="LawLLM judgment chunks")
+        schema = CollectionSchema(fields, description="LawLLM judgment chunks (no raw text)")
         coll = Collection(name=col_name, schema=schema, using="default")
         coll.create_index(
             field_name="embedding",
@@ -129,7 +128,6 @@ def insert_milvus(coll: Collection, batch_rows: Dict[str, List[Any]]) -> None:
         batch_rows["version_date"],
         batch_rows["validity_status"],
         batch_rows["chunk_index"],
-        batch_rows["text"],
         batch_rows["embedding"],
     ]
 
@@ -264,7 +262,6 @@ def build_milvus_rows(sub_rows: List[Dict[str, Any]], sub_emb: List[List[float]]
         "version_date": [r.get("version_date") or "" for r in sub_rows],
         "validity_status": [r.get("validity_status") or "valid" for r in sub_rows],
         "chunk_index": [int(r.get("chunk_index", 0)) for r in sub_rows],
-        "text": [r.get("text") or "" for r in sub_rows],
         "embedding": sub_emb,
     }
 
