@@ -228,6 +228,7 @@ def build_doc_record(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "doc_id": row.get("doc_id", ""),
         "doc_type": row.get("doc_type", ""),
+        "doctype_detail": row.get("doctype_detail", ""),
         "case_system": row.get("case_system", ""),
         "case_subtype": row.get("case_subtype", ""),
         "trial_level": row.get("trial_level", ""),
