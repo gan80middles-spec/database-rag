@@ -206,8 +206,10 @@ def upsert_mongo_docs(col, docs: Iterable[Dict[str, Any]]) -> None:
 
 
 def iter_jsonl_files(input_dir: str, pattern: str) -> Iterable[str]:
-    for fp in sorted(glob.glob(os.path.join(input_dir, pattern))):
-        yield fp
+    search_path = os.path.join(input_dir, "**", pattern)
+    for fp in sorted(glob.glob(search_path, recursive=True)):
+        if os.path.isfile(fp):
+            yield fp
 
 
 def load_jsonl(fp: str) -> Iterable[Dict[str, Any]]:
