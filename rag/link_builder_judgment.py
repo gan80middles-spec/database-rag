@@ -1,7 +1,7 @@
 # link_builder_docs_from_statutes.py
 # -*- coding: utf-8 -*-
 import re
-from typing import Dict, List, Tuple, Iterable, Optional
+from typing import Dict, List, Tuple, Iterable, Optional, Any, Set
 from pymongo import MongoClient, UpdateOne
 
 # === 连接配置 ===
@@ -74,30 +74,107 @@ def load_target_docs(D, C) -> Dict[str, List[Tuple[str,str]]]:
             name2docs.setdefault(norm_name(al), []).append((doc_id, ""))
     return name2docs
 
-def parse_statutes_from_doc(jdoc: dict) -> Iterable[Tuple[str,int]]:
-    """
-    优先从 judgment_info.statutes 中取结构化 {law, article}；
-    若没有，则从顶层 statutes 字符串列表用正则回退解析。
-    返回 (law_name_raw, article_no_int)
-    """
-    # 结构化优先
-    st = (((jdoc.get("judgment_info") or {}).get("statutes")) or [])
-    for item in st:
-        law = item.get("law") or item.get("name") or ""
-        art = item.get("article")
-        if isinstance(art, str):
-            art = cn_to_int(art)
-        if isinstance(art, int) and law:
-            yield (law, art)
+def _normalize_articles(raw: Any) -> List[int]:
+    """将 article 字段的多形态值统一为正整数列表。"""
 
-    # 回退：顶层 statutes 是“《××法》第××条”形式
-    if not st:
-        for s in jdoc.get("statutes") or []:
-            m = PAT.search(s or "")
-            if not m: 
-                continue
-            law_raw, art_raw = m.group(1), m.group(2)
-            yield (law_raw, cn_to_int(art_raw))
+    numbers: Set[int] = set()
+
+    def collect(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, (list, tuple, set)):
+            for v in value:
+                collect(v)
+            return
+        if isinstance(value, dict):
+            # 支持 range 结构，如 {"L": 1, "R": 3}
+            left = value.get("L") or value.get("left") or value.get("start") or value.get("from")
+            right = value.get("R") or value.get("right") or value.get("end") or value.get("to")
+            if left is not None or right is not None:
+                l = cn_to_int(left)
+                r = cn_to_int(right if right is not None else left)
+                if l > 0 and r > 0:
+                    if r < l:
+                        l, r = r, l
+                    for n in range(l, r + 1):
+                        numbers.add(n)
+                    return
+                if l > 0:
+                    numbers.add(l)
+                if right is not None:
+                    rn = cn_to_int(right)
+                    if rn > 0:
+                        numbers.add(rn)
+                return
+            for v in value.values():
+                collect(v)
+            return
+        n = cn_to_int(value)
+        if n > 0:
+            numbers.add(n)
+
+    collect(raw)
+    return sorted(numbers)
+
+
+def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[int]]], List[str]]:
+    """
+    返回：
+      - parsed: [(law_name_norm, law_name_raw, article_no or None)]
+      - failures: 无法解析的原始片段（字符串化）
+    """
+
+    parsed: List[Tuple[str, str, Optional[int]]] = []
+    failures: List[str] = []
+
+    def emit(law_raw: str, article: Optional[int]) -> bool:
+        law_norm = norm_name(law_raw)
+        if not law_norm:
+            return False
+        if article is not None and article <= 0:
+            return False
+        parsed.append((law_norm, law_raw, article))
+        return True
+
+    def handle_item(item: Any) -> None:
+        if isinstance(item, dict):
+            law_raw = item.get("law") or item.get("name") or item.get("title") or ""
+            arts_raw = item.get("article")
+            if arts_raw in (None, "", []):
+                arts_raw = item.get("articles")
+            if arts_raw in (None, "", []):
+                arts_raw = item.get("article_no")
+
+            articles = _normalize_articles(arts_raw)
+            emitted = False
+            for art in articles:
+                if emit(law_raw, art):
+                    emitted = True
+            if not articles and law_raw:
+                emitted = emit(law_raw, None) or emitted
+            if not emitted and (law_raw or arts_raw):
+                failures.append(str(item))
+        elif isinstance(item, str):
+            emitted = False
+            for m in PAT.finditer(item):
+                law_raw, art_raw = m.group(1), m.group(2)
+                art = cn_to_int(art_raw)
+                if emit(law_raw, art):
+                    emitted = True
+            if not emitted and item.strip():
+                failures.append(item)
+        else:
+            if item not in (None, "", []):
+                failures.append(str(item))
+
+    structured = (((jdoc.get("judgment_info") or {}).get("statutes")) or [])
+    for entry in structured:
+        handle_item(entry)
+
+    for entry in jdoc.get("statutes") or []:
+        handle_item(entry)
+
+    return parsed, failures
 
 def main():
     mc = MongoClient(MONGO_URI)
@@ -119,22 +196,35 @@ def main():
     ops: List[UpdateOne] = []
     seen = set()
     miss: Dict[str,int] = {}
+    parse_failures: Dict[str, int] = {}
+
+    def record_failures(items: Iterable[str]) -> None:
+        for it in items:
+            if not it:
+                continue
+            parse_failures[it] = parse_failures.get(it, 0) + 1
 
     for j in cur:
         from_doc = j["doc_id"]
         # 聚合同一法律的条文
         law_to_articles: Dict[str, set] = {}
         law_to_rawname: Dict[str, str] = {}
+        law_no_articles: Set[str] = set()
 
-        for law_raw, art in parse_statutes_from_doc(j):
-            key = norm_name(law_raw)
-            if not key:
+        parsed_statutes, failed_items = parse_statutes_from_doc(j)
+        record_failures(failed_items)
+
+        for lname_norm, law_raw, art in parsed_statutes:
+            if not lname_norm:
                 continue
-            if key not in law_to_articles:
-                law_to_articles[key] = set()
-                law_to_rawname[key] = law_raw
-            if art:
-                law_to_articles[key].add(int(art))
+            if lname_norm not in law_to_articles:
+                law_to_articles[lname_norm] = set()
+                law_to_rawname[lname_norm] = law_raw
+            if art is None:
+                law_no_articles.add(lname_norm)
+                continue
+            if art > 0:
+                law_to_articles[lname_norm].add(int(art))
 
         for lname_norm, arts in law_to_articles.items():
             targets = name2docs.get(lname_norm) or []
@@ -144,16 +234,21 @@ def main():
             # 同名可能映射多个（如主法/解释），全连
             for to_doc, _dt in targets:
                 key = (from_doc, to_doc, "applies")
-                if key in seen: 
+                if key in seen:
                     continue
                 seen.add(key)
+                update_doc = {"$setOnInsert": {"law_name_raw": law_to_rawname[lname_norm]}}
+                sorted_arts = sorted(arts)
+                if sorted_arts:
+                    update_doc["$addToSet"] = {"articles": {"$each": sorted_arts}}
+                elif lname_norm in law_no_articles:
+                    update_doc["$setOnInsert"]["articles"] = []
+                else:
+                    continue
                 ops.append(
                     UpdateOne(
                         {"from_doc": from_doc, "to_doc": to_doc, "edge": "applies"},
-                        {
-                            "$setOnInsert": {"law_name_raw": law_to_rawname[lname_norm]},
-                            "$addToSet": {"articles": {"$each": sorted(arts)}},
-                        },
+                        update_doc,
                         upsert=True,
                     )
                 )
@@ -167,6 +262,12 @@ def main():
     if miss:
         top = sorted(miss.items(), key=lambda x: -x[1])[:10]
         print("[MISSING LAW NAMES] top 10 (norm):")
+        for k, v in top:
+            print(f"  - {k} ×{v}")
+
+    if parse_failures:
+        top = sorted(parse_failures.items(), key=lambda x: -x[1])[:10]
+        print("[PARSE FAILURES] top 10 raw snippets:")
         for k, v in top:
             print(f"  - {k} ×{v}")
 
