@@ -56,24 +56,23 @@ for (doc_id, doc_type), rows in bucket.items():
     name_norm = norm_name(main_name)
     alias_norm = sorted({name_norm})
 
-    payload = {
+    set_on_insert = {
         "doc_id": doc_id,
         "doc_type": doc_type,
         "law_name": main_name,
         "law_name_norm": name_norm,
         "law_alias": [],
         "law_alias_norm": alias_norm,
+    }
+    set_data = {
         "version_date": vdates[0] if vdates else "",
     }
     ops.append(
         UpdateOne(
             {"doc_id": doc_id},
             {
-                "$setOnInsert": payload,
-                "$set": {
-                    "law_name_norm": name_norm,
-                    "version_date": payload["version_date"] or "",
-                },
+                "$setOnInsert": set_on_insert,
+                "$set": set_data,
             },
             upsert=True,
         )
