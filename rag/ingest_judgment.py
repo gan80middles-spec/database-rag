@@ -69,7 +69,7 @@ def ensure_milvus_collection(
     token: Optional[str] = None,
     uri: Optional[str] = None,
 ) -> Collection:
-    """Ensure the Milvus collection exists (HNSW/IP index)."""
+    from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
 
     if uri:
         connections.connect("default", uri=uri, token=token)
@@ -94,17 +94,14 @@ def ensure_milvus_collection(
             FieldSchema(name="version_date", dtype=DataType.VARCHAR, max_length=16),
             FieldSchema(name="validity_status", dtype=DataType.VARCHAR, max_length=16),
             FieldSchema(name="chunk_index", dtype=DataType.INT64),
+            # ⚠️ 删除了 text
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
         ]
         schema = CollectionSchema(fields, description="LawLLM judgment chunks (no raw text)")
         coll = Collection(name=col_name, schema=schema, using="default")
         coll.create_index(
             field_name="embedding",
-            index_params={
-                "index_type": "HNSW",
-                "metric_type": "IP",
-                "params": {"M": 48, "efConstruction": 200},
-            },
+            index_params={"index_type": "HNSW", "metric_type": "IP", "params": {"M": 48, "efConstruction": 200}},
         )
     coll = Collection(col_name)
     coll.load()
@@ -112,33 +109,29 @@ def ensure_milvus_collection(
 
 
 def insert_milvus(coll: Collection, batch_rows: Dict[str, List[Any]]) -> None:
-    """Insert chunk rows into Milvus, replacing on PK conflicts."""
+    schema_fields = [f.name for f in coll.schema.fields]  # 以集合的字段顺序为准
+    missing = [name for name in schema_fields if name not in batch_rows]
+    extra = [name for name in batch_rows.keys() if name not in schema_fields]
 
-    data = [
-        batch_rows["chunk_id"],
-        batch_rows["doc_id"],
-        batch_rows["doc_type"],
-        batch_rows["case_type"],
-        batch_rows["court"],
-        batch_rows["cause"],
-        batch_rows["contract_type"],
-        batch_rows["section"],
-        batch_rows["law_name"],
-        batch_rows["article_no"],
-        batch_rows["version_date"],
-        batch_rows["validity_status"],
-        batch_rows["chunk_index"],
-        batch_rows["embedding"],
-    ]
+    if missing:
+        # 如果缺的是 text，基本就是没重建成功
+        hint = ""
+        if "text" in missing:
+            hint = "（集合里仍含 text，说明你没 --recreate 1 重建；请先 drop 再建）"
+        raise ValueError(f"[SchemaMismatch] 缺少列: {missing} {hint}")
 
+    if extra:
+        # 允许日志提示但不中断，也可以选择严格抛错
+        print(f"[WARN] 这些列在集合中不存在，将忽略: {extra}")
+
+    data = [batch_rows[name] for name in schema_fields]  # 严格按顺序组装
     try:
         coll.insert(data)
     except Exception:
-        # 主键冲突时删除后重插（避免批量写入失败）。
         import json as _json
 
-        pk_expr = f"chunk_id in {_json.dumps([str(x) for x in batch_rows['chunk_id']], ensure_ascii=False)}"
-        coll.delete(pk_expr)
+        pk_list = [str(x) for x in batch_rows["chunk_id"]]
+        coll.delete(f"chunk_id in {_json.dumps(pk_list, ensure_ascii=False)}")
         coll.insert(data)
 
 
@@ -262,6 +255,7 @@ def build_milvus_rows(sub_rows: List[Dict[str, Any]], sub_emb: List[List[float]]
         "version_date": [r.get("version_date") or "" for r in sub_rows],
         "validity_status": [r.get("validity_status") or "valid" for r in sub_rows],
         "chunk_index": [int(r.get("chunk_index", 0)) for r in sub_rows],
+        # ⚠️ 删除了 "text"
         "embedding": sub_emb,
     }
 
