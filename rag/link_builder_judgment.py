@@ -4,29 +4,6 @@ import re
 from typing import Dict, List, Tuple, Iterable, Optional, Any, Set
 from pymongo import MongoClient, UpdateOne
 
-# —— 处理“关于适用《…法》的解释”内嵌法名丢失的问题
-INNER_LAW = re.compile(r"关于适用\s*[《〈<]\s*([^》〉>]+?)\s*[》〉>]\s*的解释")
-
-
-def fix_interpretation_title(raw: str) -> str:
-    s = str(raw or "").strip()
-    m = INNER_LAW.search(s)
-    if m:
-        inner = m.group(1)
-        # 去掉内层书名号，仅保留内容
-        inner_fixed = (
-            inner.replace("《", "")
-            .replace("》", "")
-            .replace("〈", "")
-            .replace("〉", "")
-            .replace("<", "")
-            .replace(">", "")
-            .strip()
-        )
-        # 回填一个“完整标题”，避免出现“关于适用的解释”
-        s = INNER_LAW.sub(f"关于适用{inner_fixed}的解释", s)
-    return s
-
 # === 连接配置 ===
 MONGO_URI = "mongodb://adminUser:~Q2w3e4r@192.168.110.36:27019"
 DB_NAME   = "lawKB"
@@ -39,9 +16,6 @@ TARGET_DOC_TYPES = {"statute", "judicial_interpretation"}
 
 # ==== 你的民法典 doc_id（整部法） ====
 CIVIL_DOC_ID = "CODE-CIVIL-20200528"  # 按你库里的实际ID
-
-# 《……》第……条 解析（回退用）
-PAT = re.compile(r"《\s*([^》]+?)\s*》第([〇零一二三四五六七八九十百千两\d]+)条")
 
 CN_PREFIX = re.compile(r"^\s*中华人民共和国")
 # 去掉“（…修正…）/（…修订…）”这类括注；随后再统一去各种括号符号
@@ -76,6 +50,24 @@ def norm_name(s: str) -> str:
     s = BRACKETS.sub("", s)                       # 再去残余括号符号（里面的字会保留）
     s = s.replace("　"," ").replace("·"," ")
     s = MULTI_WS.sub("", s)                       # 去所有空白
+    return s
+
+
+# —— 去掉标题里的“内层书名号”（〈…〉 / <…>），只保留里面文字
+INNER_QUOTES_ANY = re.compile(r"[〈<]\s*([^〉>]+?)\s*[〉>]")
+def strip_inner_quotes(s: str) -> str:
+    return INNER_QUOTES_ANY.sub(r"\1", s or "")
+
+
+# —— 修复“关于适用《……法》的解释”里内嵌法名丢失的问题
+INNER_LAW = re.compile(r"关于适用\s*[《〈<]\s*([^》〉>]+?)\s*[》〉>]\s*的解释")
+def fix_interpretation_title(raw: str) -> str:
+    s = str(raw or "").strip()
+    m = INNER_LAW.search(s)
+    if m:
+        inner = m.group(1)
+        inner = inner.replace("《","").replace("》","").replace("〈","").replace("〉","").replace("<","").replace(">","").strip()
+        s = INNER_LAW.sub(f"关于适用{inner}的解释", s)
     return s
 
 
@@ -155,8 +147,11 @@ GUARANTEE_NAMES = {norm_name(x) for x in {"担保法", "中华人民共和国担
 LAW_L  = r"[《〈<⟪⟨]"
 LAW_R  = r"[》〉>⟫⟩]"
 BRK_OPT = r"(?:\s*(?:（[^）]*）|\([^)]*\)|\[[^\]]*\]|【[^】]*】))*"
-PAT = re.compile(
-    rf"{LAW_L}\s*([^》〉>⟫⟩]+?)\s*{LAW_R}{BRK_OPT}\s*第([〇零一二三四五六七八九十百千万两\d]+)条"
+
+PAT_MAIN = re.compile(
+    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
+    r"(?:\s*第\s*[（(]?[〇零一二三四五六七八九十百千万两\d]+[）)]?\s*款"
+    r"(?:\s*第\s*[（(]?[〇零一二三四五六七八九十百千万两\d]+[）)]?\s*项)?)?"
 )
 
 def ensure_indexes(E):
@@ -264,7 +259,7 @@ def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[i
     def handle_item(item: Any) -> None:
         if isinstance(item, dict):
             law_raw = item.get("law") or item.get("name") or item.get("title") or ""
-            law_raw = fix_interpretation_title(law_raw)
+            law_raw = fix_interpretation_title(strip_inner_quotes(law_raw))
             arts_raw = item.get("article")
             if arts_raw in (None, "", []):
                 arts_raw = item.get("articles")
@@ -281,14 +276,16 @@ def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[i
             if not emitted and (law_raw or arts_raw):
                 failures.append(str(item))
         elif isinstance(item, str):
-            text = fix_interpretation_title(item)
-            emitted = False
-            for m in PAT.finditer(text):
+            text = fix_interpretation_title(strip_inner_quotes(item))
+            ok = False
+
+            for m in PAT_MAIN.finditer(text):
                 law_raw, art_raw = m.group(1), m.group(2)
-                art = cn_to_int(art_raw)
-                if emit(law_raw, art):
-                    emitted = True
-            if not emitted and text.strip():
+                a = cn_to_int(art_raw)
+                if emit(law_raw, a):
+                    ok = True
+
+            if not ok and text.strip():
                 failures.append(text)
         else:
             if item not in (None, "", []):
