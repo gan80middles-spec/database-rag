@@ -26,6 +26,87 @@ def norm_name(s: str) -> str:
     return s
 
 
+def ensure_doc_from_chunks(mc, short_name: str, title_regex: str,
+                           doc_type="judicial_interpretation", validity="valid"):
+    """
+    用 chunk.title 的正则找到 doc_id，在 law_kb_docs 里 upsert：
+      - law_name 用短名（你希望的规范名）
+      - law_alias 加入该解释的“全称标题”
+      - *不会* 改 chunk，只建/修 docs
+    """
+    C = mc[DB_NAME]["law_kb_chunks"]
+    D = mc[DB_NAME]["law_kb_docs"]
+    q = {"doc_type": doc_type, "title": {"$regex": title_regex}}
+    cur = list(C.find(q, {"doc_id": 1, "title": 1, "version_date": 1}))
+    if not cur:
+        print(f"[WARN] chunks not found by title /{title_regex}/")
+        return 0
+
+    ops = []
+    for d in cur:
+        did = d.get("doc_id")
+        title = d.get("title") or short_name
+        if not did:
+            continue
+        ops.append(UpdateOne(
+            {"doc_id": did},
+            {
+                "$setOnInsert": {
+                    "doc_id": did,
+                    "doc_type": doc_type,
+                    "law_name": short_name,
+                    "law_name_norm": norm_name(short_name),
+                    "law_alias": [title],
+                    "law_alias_norm": sorted({norm_name(short_name), norm_name(title)}),
+                    "version_date": d.get("version_date", ""),
+                    "validity_status": validity,
+                },
+                "$set": {
+                    "validity_status": validity,
+                },
+                "$addToSet": {
+                    "law_alias": {"$each": [title]},
+                    "law_alias_norm": {"$each": [norm_name(title)]},
+                },
+            },
+            upsert=True,
+        ))
+    if ops:
+        res = D.bulk_write(ops, ordered=False)
+        print(f"[OK] ensured docs from chunks for /{title_regex}/ -> "
+              f"modified={res.modified_count}, upserted={getattr(res,'upserted_count',0)}")
+        return res.modified_count + getattr(res, "upserted_count", 0)
+    return 0
+
+
+def ensure_alias_to_doc(mc, title_regex: str, target_doc_regex: str):
+    """
+    把“无序号/全称”的解释作为别名，**只**挂到目标文档（比如《建工解释（一）》）。
+    - title_regex: 在 chunks 里找到“无序号/全称”的解释标题
+    - target_doc_regex: 在 docs 里找到真正要挂接的目标（带（一））
+    """
+    C = mc[DB_NAME]["law_kb_chunks"]
+    D = mc[DB_NAME]["law_kb_docs"]
+    src = C.find_one({"doc_type": "judicial_interpretation", "title": {"$regex": title_regex}},
+                     {"title": 1})
+    dst = D.find_one({"law_name": {"$regex": target_doc_regex}}, {"_id": 1, "law_name": 1})
+    if not src or not dst:
+        print(f"[WARN] alias attach miss: src=/{title_regex}/ dst=/{target_doc_regex}/")
+        return 0
+    title = src["title"]
+    res = D.update_one(
+        {"_id": dst["_id"]},
+        {
+            "$addToSet": {
+                "law_alias": title,
+                "law_alias_norm": norm_name(title)
+            }
+        }
+    )
+    print(f"[OK] alias attached '{title}' => {dst['law_name']}")
+    return res.modified_count
+
+
 def add_alias_ops(col, finder, aliases):
     ops = []
     # 兼容字符串与列表传参
@@ -174,6 +255,35 @@ def main():
         print(f"[OK] modified={res.modified_count}, upserted={getattr(res, 'upserted_count', 0)}")
     else:
         print("[OK] nothing to update")
+
+    # 1) 人身损害赔偿解释
+    ensure_doc_from_chunks(mc,
+        short_name="人身损害赔偿解释",
+        title_regex=r"人身损害赔偿案件适用法律若干问题的解释")
+
+    # 2) 道路交通事故损害赔偿解释
+    ensure_doc_from_chunks(mc,
+        short_name="道路交通事故损害赔偿解释",
+        title_regex=r"道路交通事故损害赔偿案件适用法律若干问题的解释")
+
+    # 3) 行政赔偿规定
+    ensure_doc_from_chunks(mc,
+        short_name="行政赔偿规定",
+        title_regex=r"审理行政赔偿案件若干问题的规定")
+
+    # 4) 刑事诉讼法解释
+    ensure_doc_from_chunks(mc,
+        short_name="刑事诉讼法解释",
+        title_regex=r"适用中华人民共和国刑事诉讼法的解释")
+
+    # 5) 建工解释（先确保《解释（一）》的文档存在；然后把“无序号全称”挂到（一））
+    ensure_doc_from_chunks(mc,
+        short_name="建设工程施工合同纠纷解释（一）",
+        title_regex=r"建设工程施工合同纠纷案件适用法律问题的解释（一）")
+
+    ensure_alias_to_doc(mc,
+        title_regex=r"建设工程施工合同纠纷案件适用法律问题的解释(?!（一）)",  # 无（一）
+        target_doc_regex=r"建设工程施工合同纠纷解释（一）")
 
 
 if __name__ == "__main__":
