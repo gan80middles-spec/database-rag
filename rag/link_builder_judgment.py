@@ -143,30 +143,74 @@ def build_docs_index(D) -> Dict[str, Set[str]]:
             if alnm: name2docs[alnm].add(did)
     return name2docs
 
-def build_chunks_index(C) -> Tuple[Dict[str, Set[str]], Dict[str, Set[int]]]:
+def build_chunks_index(C) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[int]], Dict[str, str]]:
     """
     law_kb_chunks:
       - title_norm → {doc_id}
+      - name_norm  → {doc_id}
       - doc_id → {article numbers}
+      - doc_id → version_date
     """
     title2docs: Dict[str, Set[str]] = defaultdict(set)
+    name2docs: Dict[str, Set[str]]  = defaultdict(set)
     doc2arts: Dict[str, Set[int]]   = defaultdict(set)
+    doc2vdate: Dict[str, str]       = {}
 
-    cur = C.find({"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
-                 {"doc_id":1,"title":1,"article_no":1})
+    cur = C.find(
+        {"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
+        {"doc_id": 1, "title": 1, "law_name": 1, "article_no": 1, "version_date": 1},
+    )
     for d in cur:
         did = d.get("doc_id")
-        if not did: continue
-        # 标题索引
-        t = d.get("title") or ""
-        t = fix_interpretation_title(strip_inner_quotes(t))
+        if not did:
+            continue
+
+        # 标题 → doc_id
+        t = fix_interpretation_title(strip_inner_quotes(d.get("title") or ""))
         tnorm = norm_name(t)
         if tnorm:
             title2docs[tnorm].add(did)
-        # 条文索引
+
+        # law_name → doc_id
+        lnorm = norm_name(d.get("law_name") or "")
+        if lnorm:
+            name2docs[lnorm].add(did)
+
+        # 条号集合
         for n in expand_article_no(d.get("article_no")):
             doc2arts[did].add(n)
-    return title2docs, doc2arts
+
+        # 版本日期（取最大）
+        v = d.get("version_date") or ""
+        if v and (did not in doc2vdate or v > doc2vdate[did]):
+            doc2vdate[did] = v
+
+    return title2docs, name2docs, doc2arts, doc2vdate
+
+
+def find_susufa_docs(C) -> Dict[str, str]:
+    """
+    直接用 chunks.title 正则找三部“关于适用…诉讼法的解释”的 doc_id
+    """
+    patt = {
+        "民事诉讼法解释": r"适用.*民事诉讼法.*的解释",
+        "行政诉讼法解释": r"适用.*行政诉讼法.*的解释",
+        "刑事诉讼法解释": r"适用.*刑事诉讼法.*的解释",
+    }
+    out: Dict[str, str] = {}
+    for short, rx in patt.items():
+        hit = C.find_one(
+            {"doc_type": "judicial_interpretation", "title": {"$regex": rx}},
+            {"doc_id": 1},
+        )
+        if not hit:
+            hit = C.find_one(
+                {"doc_type": "judicial_interpretation", "law_name": short},
+                {"doc_id": 1},
+            )
+        if hit and hit.get("doc_id"):
+            out[short] = hit["doc_id"]
+    return out
 
 # 民法典“担保物权 + 保证合同”的条号集合（从 chunks 的目录推断）
 def collect_civil_guarantee_articles(C, civil_doc_id: str) -> Set[int]:
@@ -286,19 +330,9 @@ def main():
     E.create_index([("from_doc",1),("to_doc",1),("edge",1)])
 
     # 预索引
-    docs_index   = build_docs_index(D)           # 规范名/别名 → doc_ids
-    titles_index, doc2arts = build_chunks_index(C)  # 标题 → doc_ids；doc_id → 条号集合
-
-    # 三大诉讼法解释 doc_id 映射（短名取自 chunks 标题归一）
-    susu_map: Dict[str, str] = {}
-    for short in ("民事诉讼法解释","行政诉讼法解释","刑事诉讼法解释"):
-        # 优先从标题索引取 doc_id
-        ids = titles_index.get(norm_name(short)) or set()
-        if not ids:
-            # 或从 docs 索引拿
-            ids = docs_index.get(norm_name(short)) or set()
-        if ids:
-            susu_map[short] = list(ids)[0]  # 任取其一（一般唯一）
+    docs_index = build_docs_index(D)  # 规范名/别名 → doc_ids
+    titles_index, chunk_name_index, doc2arts, doc2vdate = build_chunks_index(C)
+    susu_map = find_susufa_docs(C)
 
     # 民法典 doc_id（用于担保法 → 民法典）
     civil_ids = titles_index.get(norm_name("民法典")) or docs_index.get(norm_name("民法典")) or set()
@@ -320,6 +354,15 @@ def main():
         for it in items:
             if not it: continue
             parse_failures[it] = parse_failures.get(it, 0) + 1
+
+    def pick_best(cands: Iterable[str], arts: Set[int]) -> Optional[str]:
+        best, best_ol, best_v = None, -1, ""
+        for did in cands:
+            ol = len(arts & (doc2arts.get(did) or set()))
+            v = doc2vdate.get(did, "")
+            if ol > best_ol or (ol == best_ol and v > best_v):
+                best, best_ol, best_v = did, ol, v
+        return best
 
     for j in judgments:
         from_doc = j["doc_id"]
@@ -345,9 +388,9 @@ def main():
 
         for lname_norm, arts in law_to_articles.items():
             # --- 1) 泛称“关于适用的解释” → 民/行/刑 + 条号重合度 ---
-            if lname_norm in GENERIC_INTERP:
-                prefer = {"civil":"民事诉讼法解释","admin":"行政诉讼法解释","criminal":"刑事诉讼法解释"}.get(case_sys)
-                cand: List[Tuple[str,int]] = []  # (doc_id, overlap)
+            if lname_norm in GENERIC_INTERP and susu_map:
+                prefer = {"civil": "民事诉讼法解释", "admin": "行政诉讼法解释", "criminal": "刑事诉讼法解释"}.get(case_sys)
+                cand: List[Tuple[str, int]] = []
                 for short, did in susu_map.items():
                     overlap = len(arts & (doc2arts.get(did) or set()))
                     bias = 100 if short == prefer else 0
@@ -361,8 +404,7 @@ def main():
                         upd = {"$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]}}
                         if arts:
                             upd["$addToSet"] = {"articles": {"$each": sorted(arts)}}
-                        ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
-                        # 回写别名到 chunks
+                        ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge": "applies"}, upd, upsert=True))
                         C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
                     continue
 
@@ -384,8 +426,10 @@ def main():
             candidates |= (docs_index.get(lname_norm) or set())
             # 3.2 标题索引（多数解释的标题就是“全称”）
             candidates |= (titles_index.get(lname_norm) or set())
+            # 3.3 law_name 索引（chunks 中的 law_name）
+            candidates |= (chunk_name_index.get(lname_norm) or set())
 
-            # 3.3 特例：建工解释（一）——把无序号全称指向（一）
+            # 3.4 特例：建工解释（一）——把无序号全称指向（一）
             if not candidates and "建设工程施工合同纠纷案件适用法律问题的解释" in rawname_cache[lname_norm]:
                 keyed = norm_name("建设工程施工合同纠纷案件适用法律问题的解释（一）")
                 candidates |= (titles_index.get(keyed) or set()) or (docs_index.get(keyed) or set())
@@ -395,12 +439,8 @@ def main():
                 continue
 
             # 候选不唯一时：按条号重叠度选择；若没有条号就任取一个
-            best_id, best_ol = None, -1
-            for did in candidates:
-                ol = len(arts & (doc2arts.get(did) or set()))
-                if ol > best_ol:
-                    best_id, best_ol = did, ol
-            to_doc = best_id or list(candidates)[0]
+            best_id = pick_best(candidates, arts)
+            to_doc = best_id or (next(iter(candidates)) if candidates else None)
 
             key = (from_doc, to_doc, "applies")
             if key in seen: 
