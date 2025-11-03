@@ -4,6 +4,29 @@ import re
 from typing import Dict, List, Tuple, Iterable, Optional, Any, Set
 from pymongo import MongoClient, UpdateOne
 
+# —— 处理“关于适用《…法》的解释”内嵌法名丢失的问题
+INNER_LAW = re.compile(r"关于适用\s*[《〈<]\s*([^》〉>]+?)\s*[》〉>]\s*的解释")
+
+
+def fix_interpretation_title(raw: str) -> str:
+    s = str(raw or "").strip()
+    m = INNER_LAW.search(s)
+    if m:
+        inner = m.group(1)
+        # 去掉内层书名号，仅保留内容
+        inner_fixed = (
+            inner.replace("《", "")
+            .replace("》", "")
+            .replace("〈", "")
+            .replace("〉", "")
+            .replace("<", "")
+            .replace(">", "")
+            .strip()
+        )
+        # 回填一个“完整标题”，避免出现“关于适用的解释”
+        s = INNER_LAW.sub(f"关于适用{inner_fixed}的解释", s)
+    return s
+
 # === 连接配置 ===
 MONGO_URI = "mongodb://adminUser:~Q2w3e4r@192.168.110.36:27019"
 DB_NAME   = "lawKB"
@@ -164,6 +187,7 @@ def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[i
     def handle_item(item: Any) -> None:
         if isinstance(item, dict):
             law_raw = item.get("law") or item.get("name") or item.get("title") or ""
+            law_raw = fix_interpretation_title(law_raw)
             arts_raw = item.get("article")
             if arts_raw in (None, "", []):
                 arts_raw = item.get("articles")
@@ -180,14 +204,15 @@ def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[i
             if not emitted and (law_raw or arts_raw):
                 failures.append(str(item))
         elif isinstance(item, str):
+            text = fix_interpretation_title(item)
             emitted = False
-            for m in PAT.finditer(item):
+            for m in PAT.finditer(text):
                 law_raw, art_raw = m.group(1), m.group(2)
                 art = cn_to_int(art_raw)
                 if emit(law_raw, art):
                     emitted = True
-            if not emitted and item.strip():
-                failures.append(item)
+            if not emitted and text.strip():
+                failures.append(text)
         else:
             if item not in (None, "", []):
                 failures.append(str(item))
