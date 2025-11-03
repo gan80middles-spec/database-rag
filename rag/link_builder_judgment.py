@@ -100,6 +100,11 @@ PAT_MAIN = re.compile(
 
 GENERIC_INTERP = {"最高人民法院关于适用的解释", "关于适用的解释"}
 
+NAME_BLACKLIST_NORMS = {
+    norm_name("上海市政府信息公开规定"),
+    norm_name("最高人民法院关于适用中华人民共和国合同法若干问题的解释（二）"),
+}
+
 # ---------- 解析“民/行/刑”系统、条号展开 ----------
 def suggest_system(jdoc: dict) -> str:
     info = (jdoc.get("judgment_info") or {})
@@ -143,44 +148,34 @@ def build_docs_index(D) -> Dict[str, Set[str]]:
             if alnm: name2docs[alnm].add(did)
     return name2docs
 
-def build_chunks_index(C) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Dict[str, Set[int]], Dict[str, str]]:
-    """
-    law_kb_chunks:
-      - title_norm → {doc_id}
-      - name_norm  → {doc_id}
-      - doc_id → {article numbers}
-      - doc_id → version_date
-    """
-    title2docs: Dict[str, Set[str]] = defaultdict(set)
-    name2docs: Dict[str, Set[str]]  = defaultdict(set)
-    doc2arts: Dict[str, Set[int]]   = defaultdict(set)
-    doc2vdate: Dict[str, str]       = {}
+def build_chunks_index(C):
+    from collections import defaultdict
+    title2docs = defaultdict(set)
+    name2docs  = defaultdict(set)
+    doc2arts   = defaultdict(set)
+    doc2vdate  = {}
 
     cur = C.find(
         {"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
-        {"doc_id": 1, "title": 1, "law_name": 1, "article_no": 1, "version_date": 1},
+        {"doc_id":1,"title":1,"law_name":1,"article_no":1,"version_date":1},
     )
     for d in cur:
         did = d.get("doc_id")
-        if not did:
+        if not did: 
             continue
 
-        # 标题 → doc_id
         t = fix_interpretation_title(strip_inner_quotes(d.get("title") or ""))
-        tnorm = norm_name(t)
-        if tnorm:
-            title2docs[tnorm].add(did)
+        tn = norm_name(t)
+        if tn: 
+            title2docs[tn].add(did)
 
-        # law_name → doc_id
-        lnorm = norm_name(d.get("law_name") or "")
-        if lnorm:
-            name2docs[lnorm].add(did)
+        ln = norm_name(d.get("law_name") or "")
+        if ln: 
+            name2docs[ln].add(did)
 
-        # 条号集合
         for n in expand_article_no(d.get("article_no")):
             doc2arts[did].add(n)
 
-        # 版本日期（取最大）
         v = d.get("version_date") or ""
         if v and (did not in doc2vdate or v > doc2vdate[did]):
             doc2vdate[did] = v
@@ -211,6 +206,31 @@ def find_susufa_docs(C) -> Dict[str, str]:
         if hit and hit.get("doc_id"):
             out[short] = hit["doc_id"]
     return out
+
+# 民法典条号集合（从 chunks 的目录推断）
+def collect_civil_contract_articles(C, civil_doc_id: str) -> Set[int]:
+    """民法典·第三编 合同 -> 条号集合"""
+    arts: Set[int] = set()
+    for d in C.find({"doc_id": civil_doc_id}, {"path":1,"article_no":1}):
+        p = d.get("path") or {}
+        key = " ".join(str(x or "") for x in [p.get("编"), p.get("分编"), p.get("章"), p.get("节")])
+        if ("第三编" in key and "合同" in key) or "合同编" in key:
+            for n in expand_article_no(d.get("article_no")):
+                arts.add(n)
+    return arts
+
+
+def collect_civil_property_articles(C, civil_doc_id: str) -> Set[int]:
+    """民法典·第二编 物权 -> 条号集合"""
+    arts: Set[int] = set()
+    for d in C.find({"doc_id": civil_doc_id}, {"path":1,"article_no":1}):
+        p = d.get("path") or {}
+        key = " ".join(str(x or "") for x in [p.get("编"), p.get("分编"), p.get("章"), p.get("节")])
+        if ("第二编" in key and "物权" in key) or "物权编" in key:
+            for n in expand_article_no(d.get("article_no")):
+                arts.add(n)
+    return arts
+
 
 # 民法典“担保物权 + 保证合同”的条号集合（从 chunks 的目录推断）
 def collect_civil_guarantee_articles(C, civil_doc_id: str) -> Set[int]:
@@ -334,10 +354,12 @@ def main():
     titles_index, chunk_name_index, doc2arts, doc2vdate = build_chunks_index(C)
     susu_map = find_susufa_docs(C)
 
-    # 民法典 doc_id（用于担保法 → 民法典）
-    civil_ids = titles_index.get(norm_name("民法典")) or docs_index.get(norm_name("民法典")) or set()
+    # 民法典 doc_id（用于旧法名称映射至各分编）
+    civil_ids = titles_index.get(norm_name("民法典")) or docs_index.get(norm_name("民法典")) or chunk_name_index.get(norm_name("民法典")) or set()
     CIVIL_DOC_ID = list(civil_ids)[0] if civil_ids else None
     CIVIL_GUARANTEE_ARTS = collect_civil_guarantee_articles(C, CIVIL_DOC_ID) if CIVIL_DOC_ID else set()
+    CIVIL_CONTRACT_ARTS  = collect_civil_contract_articles(C,  CIVIL_DOC_ID) if CIVIL_DOC_ID else set()
+    CIVIL_PROPERTY_ARTS  = collect_civil_property_articles(C,  CIVIL_DOC_ID) if CIVIL_DOC_ID else set()
 
     # 载入判决类文书
     q = {"doc_type": "judgment"}
@@ -387,6 +409,8 @@ def main():
                 law_to_articles[lname_norm].add(int(art))
 
         for lname_norm, arts in law_to_articles.items():
+            if lname_norm in NAME_BLACKLIST_NORMS:
+                continue
             # --- 1) 泛称“关于适用的解释” → 民/行/刑 + 条号重合度 ---
             if lname_norm in GENERIC_INTERP and susu_map:
                 prefer = {"civil": "民事诉讼法解释", "admin": "行政诉讼法解释", "criminal": "刑事诉讼法解释"}.get(case_sys)
@@ -408,14 +432,45 @@ def main():
                         C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
                     continue
 
-            # --- 2) “担保法/担保法解释” → 民法典（担保物权+保证合同） ---
-            if lname_norm in {"担保法","中华人民共和国担保法","最高人民法院关于适用中华人民共和国担保法若干问题的解释","担保法解释"} and CIVIL_DOC_ID:
+            # --- 旧法名 → 民法典分编（合同/担保/物权） ---
+            if CIVIL_DOC_ID and lname_norm in {"合同法", "中华人民共和国合同法"}:
                 to_doc = CIVIL_DOC_ID
+                arts_to_add = CIVIL_CONTRACT_ARTS or arts
                 key = (from_doc, to_doc, "applies")
                 if key not in seen:
                     seen.add(key)
-                    upd = {"$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]},
-                           "$addToSet": {"articles": {"$each": sorted(CIVIL_GUARANTEE_ARTS or list(arts))}}}
+                    upd = {
+                        "$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]},
+                        "$addToSet": {"articles": {"$each": sorted(arts_to_add)}},
+                    }
+                    ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
+                    C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
+                continue
+
+            if CIVIL_DOC_ID and lname_norm in {"担保法", "中华人民共和国担保法", "担保法解释", "最高人民法院关于适用中华人民共和国担保法若干问题的解释"}:
+                to_doc = CIVIL_DOC_ID
+                arts_to_add = CIVIL_GUARANTEE_ARTS or arts
+                key = (from_doc, to_doc, "applies")
+                if key not in seen:
+                    seen.add(key)
+                    upd = {
+                        "$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]},
+                        "$addToSet": {"articles": {"$each": sorted(arts_to_add)}},
+                    }
+                    ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
+                    C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
+                continue
+
+            if CIVIL_DOC_ID and lname_norm in {"物权法", "中华人民共和国物权法"}:
+                to_doc = CIVIL_DOC_ID
+                arts_to_add = CIVIL_PROPERTY_ARTS or arts
+                key = (from_doc, to_doc, "applies")
+                if key not in seen:
+                    seen.add(key)
+                    upd = {
+                        "$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]},
+                        "$addToSet": {"articles": {"$each": sorted(arts_to_add)}},
+                    }
                     ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
                     C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
                 continue
@@ -429,10 +484,21 @@ def main():
             # 3.3 law_name 索引（chunks 中的 law_name）
             candidates |= (chunk_name_index.get(lname_norm) or set())
 
-            # 3.4 特例：建工解释（一）——把无序号全称指向（一）
-            if not candidates and "建设工程施工合同纠纷案件适用法律问题的解释" in rawname_cache[lname_norm]:
-                keyed = norm_name("建设工程施工合同纠纷案件适用法律问题的解释（一）")
-                candidates |= (titles_index.get(keyed) or set()) or (docs_index.get(keyed) or set())
+            base_ge = "建设工程施工合同纠纷案件适用法律问题的解释"
+            if base_ge in rawname_cache[lname_norm]:
+                target_norm = norm_name(f"{base_ge}（一）")
+                ge_id_set = (titles_index.get(target_norm) or set()) | (docs_index.get(target_norm) or set()) | (chunk_name_index.get(target_norm) or set())
+                if ge_id_set:
+                    to_doc = next(iter(ge_id_set))
+                    key = (from_doc, to_doc, "applies")
+                    if key not in seen:
+                        seen.add(key)
+                        upd = {"$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]}}
+                        if arts:
+                            upd["$addToSet"] = {"articles": {"$each": sorted(arts)}}
+                        ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
+                        C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
+                    continue
 
             if not candidates:
                 miss[lname_norm] = miss.get(lname_norm, 0) + 1
