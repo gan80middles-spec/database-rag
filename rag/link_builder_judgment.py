@@ -54,19 +54,10 @@ def norm_name(s: str) -> str:
 
 
 # === 忽略这类标题（不建边、不计入 PARSE FAILURES）===
-BLACKLIST_TITLE_SUBSTR = {
-    "全国法院民商事审判工作会议纪要",
-    "请示的复函",
-    "请示的答复",
-    "关于请示",
-}
 BLACKLIST_TITLE_REGEX = re.compile(r"(请示的复函|请示的答复|工作会议纪要)")
 
 def is_blacklisted_title(s: str) -> bool:
-    t = str(s or "")
-    if any(k in t for k in BLACKLIST_TITLE_SUBSTR):
-        return True
-    return bool(BLACKLIST_TITLE_REGEX.search(t))
+    return bool(BLACKLIST_TITLE_REGEX.search(str(s or "")))
 
 
 # —— 去掉标题里的“内层书名号”（〈…〉 / <…>），只保留里面文字
@@ -86,6 +77,82 @@ def fix_interpretation_title(raw: str) -> str:
         s = INNER_LAW.sub(f"关于适用{inner}的解释", s)
     return s
 
+
+# ------- 取判决的“民/行/刑”建议 -------
+def suggest_system(jdoc: dict) -> str:
+    info = (jdoc.get("judgment_info") or {})
+    txts = []
+    for k in ("case_system", "case_type", "cause", "trial_procedure", "title"):
+        v = info.get(k) or jdoc.get(k)
+        if isinstance(v, str):
+            txts.append(v)
+    big = "；".join(txts)
+    if "行政" in big:
+        return "admin"
+    if "刑事" in big:
+        return "criminal"
+    return "civil"
+
+
+# ------- 解析“第…条/第…至第…条”成数字集合 -------
+_CN = {"零":0,"〇":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10,"百":100,"千":1000}
+
+
+def _cn2i(s):
+    s = str(s or "").replace("第","").replace("条","")
+    if s.isdigit():
+        return int(s)
+    tot, tmp = 0, 0
+    for ch in s:
+        if ch in "十百千":
+            tot = (tot or 1) * _CN[ch]
+            tmp = 0
+        else:
+            v = _CN.get(ch, 0)
+            tot += v
+            tmp = v
+    return tot or tmp or 0
+
+
+_re_rng = re.compile(r"第(.+?)条\s*[-~－—–]\s*第(.+?)条")
+_re_one = re.compile(r"第(.+?)条")
+
+
+def _expand_article_no(no):
+    if not no:
+        return []
+    m = _re_rng.match(no)
+    if m:
+        L, R = _cn2i(m.group(1)), _cn2i(m.group(2))
+        if L and R and R >= L:
+            return list(range(L, R + 1))
+    m = _re_one.match(no)
+    return [_cn2i(m.group(1))] if m and _cn2i(m.group(1)) > 0 else []
+
+
+def collect_articles_for_doc(C, doc_id: str) -> set:
+    arts = set()
+    for d in C.find({"doc_id": doc_id}, {"article_no": 1}):
+        for n in _expand_article_no(d.get("article_no")):
+            arts.add(n)
+    return arts
+
+
+def load_susufa_maps(D, C):
+    """拿到三部解释的 doc_id 及其条号集合"""
+    short2id = {}
+    for short in ("民事诉讼法解释", "行政诉讼法解释", "刑事诉讼法解释"):
+        hit = D.find_one({"doc_type": "judicial_interpretation", "law_name": short}, {"doc_id": 1})
+        if hit:
+            short2id[short] = hit["doc_id"]
+    maps = {}
+    for short, did in short2id.items():
+        maps[short] = {"doc_id": did, "arts": collect_articles_for_doc(C, did)}
+    return maps
+
+
+# 可能出现的“泛称”
+GENERIC_INTERP = {"最高人民法院关于适用的解释", "关于适用的解释"}
 
 def collect_civil_code_guarantee_articles(C):
     import re
@@ -326,6 +393,7 @@ def main():
     D  = DB[COL_DOCS]
     C  = DB[COL_CHUNKS]
     E  = DB[COL_LINKS]
+    SUSUFA = load_susufa_maps(D, C)   # {'民事诉讼法解释': {'doc_id':..., 'arts': set(...)}, ...}
     RR_ARTS, GC_ARTS = collect_civil_code_guarantee_articles(C)
     ensure_indexes(E)
 
@@ -351,6 +419,7 @@ def main():
 
     for j in cur:
         from_doc = j["doc_id"]
+        case_sys = suggest_system(j)   # 'civil' / 'admin' / 'criminal'
         # 聚合同一法律的条文
         law_to_articles: Dict[str, set] = {}
         law_to_rawname: Dict[str, str] = {}
@@ -372,6 +441,43 @@ def main():
                 law_to_articles[lname_norm].add(int(art))
 
         for lname_norm, arts in law_to_articles.items():
+            if lname_norm in GENERIC_INTERP:
+                prefer = {"civil": "民事诉讼法解释", "admin": "行政诉讼法解释", "criminal": "刑事诉讼法解释"}.get(case_sys)
+                cand = []
+                if prefer and prefer in SUSUFA:
+                    cand.append(SUSUFA[prefer])
+                for k, v in SUSUFA.items():
+                    if not cand or v["doc_id"] != cand[0]["doc_id"]:
+                        cand.append(v)
+                best = None
+                best_ol = -1
+                arts_set = {int(x) for x in arts}
+                for info in cand:
+                    ol = len(info["arts"] & arts_set)
+                    if ol > best_ol:
+                        best_ol = ol
+                        best = info
+                if best and best.get("doc_id"):
+                    to_doc = best["doc_id"]
+                    key = (from_doc, to_doc, "applies")
+                    if key not in seen:
+                        seen.add(key)
+                        sorted_arts = sorted(arts)
+                        update_doc = {"$setOnInsert": {"law_name_raw": "关于适用…的解释（自动判别）"}}
+                        if sorted_arts:
+                            update_doc["$addToSet"] = {"articles": {"$each": sorted_arts}}
+                        elif lname_norm in law_no_articles:
+                            update_doc["$setOnInsert"]["articles"] = []
+                        else:
+                            continue
+                        ops.append(
+                            UpdateOne(
+                                {"from_doc": from_doc, "to_doc": to_doc, "edge": "applies"},
+                                update_doc,
+                                upsert=True,
+                            )
+                        )
+                    continue
             if lname_norm in GUARANTEE_NAMES:
                 target_articles = sorted(set(RR_ARTS) | set(GC_ARTS))
                 if target_articles:
