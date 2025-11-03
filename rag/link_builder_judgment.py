@@ -37,6 +37,9 @@ COL_LINKS = "law_kb_links"
 # 允许作为被连到的目标文种（整部法律/整份解释）
 TARGET_DOC_TYPES = {"statute", "judicial_interpretation"}
 
+# ==== 你的民法典 doc_id（整部法） ====
+CIVIL_DOC_ID = "CODE-CIVIL-20200528"  # 按你库里的实际ID
+
 # 《……》第……条 解析（回退用）
 PAT = re.compile(r"《\s*([^》]+?)\s*》第([〇零一二三四五六七八九十百千两\d]+)条")
 
@@ -74,6 +77,80 @@ def norm_name(s: str) -> str:
     s = s.replace("　"," ").replace("·"," ")
     s = MULTI_WS.sub("", s)                       # 去所有空白
     return s
+
+
+def collect_civil_code_guarantee_articles(C):
+    import re
+
+    CN = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10, "百": 100, "千": 1000}
+
+    def cn2i(s):
+        s = str(s or "").replace("第", "").replace("条", "")
+        if s.isdigit():
+            return int(s)
+        tot, tmp = 0, 0
+        for ch in s:
+            if ch in "十百千":
+                u = CN[ch]
+                tot = (tot or 1) * u
+                tmp = 0
+            else:
+                v = CN.get(ch, 0)
+                tot += v
+                tmp = v
+        return tot or tmp or 0
+
+    def expand(no):
+        if not no:
+            return []
+        m = re.match(r"\s*第(.+?)条\s*[-~－—–]\s*第(.+?)条\s*$", no)
+        if m:
+            L, R = cn2i(m.group(1)), cn2i(m.group(2))
+            if L and R and R >= L:
+                return list(range(L, R + 1))
+        m = re.match(r"\s*第(.+?)条\s*$", no)
+        return [cn2i(m.group(1))] if m and cn2i(m.group(1)) > 0 else []
+
+    arts_rr, arts_gc = set(), set()
+
+    q_rr = {
+        "doc_id": CIVIL_DOC_ID,
+        "$and": [
+            {"$or": [
+                {"path.编": {"$regex": "第二编\\s*物权"}},
+                {"path.编": {"$regex": "物权"}},
+            ]},
+            {"$or": [
+                {"path.分编": {"$regex": "第四分编\\s*担保物权"}},
+                {"path.章": {"$regex": "担保物权"}},
+            ]},
+        ],
+    }
+    for d in C.find(q_rr, {"article_no": 1}):
+        for n in expand(d.get("article_no")):
+            arts_rr.add(n)
+
+    q_gc = {
+        "doc_id": CIVIL_DOC_ID,
+        "$and": [
+            {"$or": [
+                {"path.编": {"$regex": "第三编\\s*合同"}},
+                {"path.编": {"$regex": "合同"}},
+            ]},
+            {"$or": [
+                {"path.章": {"$regex": "第十三章\\s*保证合同"}},
+                {"path.节": {"$regex": "保证合同"}},
+            ]},
+        ],
+    }
+    for d in C.find(q_gc, {"article_no": 1}):
+        for n in expand(d.get("article_no")):
+            arts_gc.add(n)
+
+    return sorted(arts_rr), sorted(arts_gc)
+
+
+GUARANTEE_NAMES = {norm_name(x) for x in {"担保法", "中华人民共和国担保法"}}
 
 LAW_L  = r"[《〈<⟪⟨]"
 LAW_R  = r"[》〉>⟫⟩]"
@@ -232,6 +309,7 @@ def main():
     D  = DB[COL_DOCS]
     C  = DB[COL_CHUNKS]
     E  = DB[COL_LINKS]
+    RR_ARTS, GC_ARTS = collect_civil_code_guarantee_articles(C)
     ensure_indexes(E)
 
     # 预加载候选：规范名 -> 多个 doc_id
@@ -277,6 +355,23 @@ def main():
                 law_to_articles[lname_norm].add(int(art))
 
         for lname_norm, arts in law_to_articles.items():
+            if lname_norm in GUARANTEE_NAMES:
+                target_articles = sorted(set(RR_ARTS) | set(GC_ARTS))
+                if target_articles:
+                    key = (from_doc, CIVIL_DOC_ID, "applies")
+                    if key not in seen:
+                        seen.add(key)
+                        ops.append(
+                            UpdateOne(
+                                {"from_doc": from_doc, "to_doc": CIVIL_DOC_ID, "edge": "applies"},
+                                {
+                                    "$setOnInsert": {"law_name_raw": "民法典（担保物权+保证合同）"},
+                                    "$addToSet": {"articles": {"$each": target_articles}},
+                                },
+                                upsert=True,
+                            )
+                        )
+                continue
             targets = name2docs.get(lname_norm) or []
             if not targets:
                 miss[lname_norm] = miss.get(lname_norm, 0) + 1
