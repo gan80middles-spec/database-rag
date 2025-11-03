@@ -5,8 +5,8 @@ from typing import Dict, List, Tuple, Iterable, Optional, Any, Set
 from pymongo import MongoClient, UpdateOne
 
 # === 连接配置 ===
-MONGO_URI = "mongodb://localhost:27017"
-DB_NAME   = "lawkb"
+MONGO_URI = "mongodb://adminUser:~Q2w3e4r@192.168.110.36:27019"
+DB_NAME   = "lawKB"
 COL_DOCS  = "law_kb_docs"
 COL_CHUNKS= "law_kb_chunks"
 COL_LINKS = "law_kb_links"
@@ -17,13 +17,21 @@ TARGET_DOC_TYPES = {"statute", "judicial_interpretation"}
 # 《……》第……条 解析（回退用）
 PAT = re.compile(r"《\s*([^》]+?)\s*》第([〇零一二三四五六七八九十百千两\d]+)条")
 
-CN_MAP = {"零":0,"〇":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10,"百":100,"千":1000}
+CN_PREFIX = re.compile(r"^\s*中华人民共和国")
+# 去掉“（…修正…）/（…修订…）”这类括注；随后再统一去各种括号符号
+RM_FIX = re.compile(r"（[^）]*修[正订][^）]*）|\([^)]*修[正订][^)]*\)")
+BRACKETS = re.compile(r"[()（）\[\]【】〈〉<>《》]")     # 仅去括号“符号”，不吃里面的字
+MULTI_WS = re.compile(r"\s+")
+
+CN_MAP = {"零":0,"〇":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,
+          "七":7,"八":8,"九":9,"十":10,"百":100,"千":1000,"万":10000}
 def cn_to_int(s: str) -> int:
     s = str(s or "").strip().replace("第","").replace("条","")
-    if s.isdigit(): return int(s)
+    if s.isdigit():
+        return int(s)
     total, tmp = 0, 0
     for ch in s:
-        if ch in "十百千":
+        if ch in "十百千万":
             unit = CN_MAP[ch]
             total = (total or 1) * unit
             tmp = 0
@@ -35,10 +43,21 @@ def cn_to_int(s: str) -> int:
 
 def norm_name(s: str) -> str:
     s = (s or "").strip()
-    s = s.replace("《","").replace("》","")
-    s = re.sub(r"^中华人民共和国", "", s)  # 去“中华人民共和国”前缀
-    s = re.sub(r"\s+", "", s)
+    # 统一去掉成对书名号/角括号
+    s = s.replace("《","").replace("》","").replace("〈","").replace("〉","").replace("<","").replace(">","")
+    s = CN_PREFIX.sub("", s)
+    s = RM_FIX.sub("", s)                         # 先去“修正/修订”类括注内容
+    s = BRACKETS.sub("", s)                       # 再去残余括号符号（里面的字会保留）
+    s = s.replace("　"," ").replace("·"," ")
+    s = MULTI_WS.sub("", s)                       # 去所有空白
     return s
+
+LAW_L  = r"[《〈<⟪⟨]"
+LAW_R  = r"[》〉>⟫⟩]"
+BRK_OPT = r"(?:\s*(?:（[^）]*）|\([^)]*\)|\[[^\]]*\]|【[^】]*】))*"
+PAT = re.compile(
+    rf"{LAW_L}\s*([^》〉>⟫⟩]+?)\s*{LAW_R}{BRK_OPT}\s*第([〇零一二三四五六七八九十百千万两\d]+)条"
+)
 
 def ensure_indexes(E):
     E.create_index([("from_doc",1)])
@@ -48,31 +67,37 @@ def ensure_indexes(E):
     # E.create_index([( "from_doc",1),("to_doc",1),("edge",1)], unique=True)
 
 def load_target_docs(D, C) -> Dict[str, List[Tuple[str,str]]]:
-    """
-    预构建：规范化法名 -> [(doc_id, doc_type)]
-    优先用 docs 的 law_name/law_alias；若没有别名，退回到 chunks 汇总别名。
-    """
     name2docs: Dict[str, List[Tuple[str,str]]] = {}
-    # 1) 先扫 docs
+
+    # 1) 先用 docs 的预计算规范名（最稳）
     for d in D.find({"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
-                    {"doc_id":1,"doc_type":1,"law_name":1,"law_alias":1}):
+                    {"doc_id":1,"doc_type":1,"law_name":1,"law_alias":1,
+                     "law_name_norm":1,"law_alias_norm":1}):
         doc_id, dt = d["doc_id"], d["doc_type"]
-        ln = norm_name(d.get("law_name",""))
-        if ln:
-            name2docs.setdefault(ln, []).append((doc_id, dt))
-        for al in d.get("law_alias") or []:
-            name2docs.setdefault(norm_name(al), []).append((doc_id, dt))
-    # 2) 用 chunks 做别名补充
+        keys = set()
+        if d.get("law_name_norm"):
+            keys.add(d["law_name_norm"])
+        for k in (d.get("law_alias_norm") or []):
+            if k: keys.add(k)
+        # 兜底：再把原始名也跑一遍本脚本的 norm
+        for raw in [d.get("law_name",""), * (d.get("law_alias") or [])]:
+            k = norm_name(raw)
+            if k: keys.add(k)
+        for k in keys:
+            name2docs.setdefault(k, []).append((doc_id, dt))
+
+    # 2) 用 chunks 再补充一圈别名（兼容旧数据）
     cur = C.find({"doc_type":{"$in": list(TARGET_DOC_TYPES)}},
                  {"doc_id":1,"law_name":1,"law_alias":1})
     for d in cur:
         doc_id = d.get("doc_id")
-        ln = norm_name(d.get("law_name",""))
-        if ln and (doc_id, None) not in name2docs.get(ln, []):
-            name2docs.setdefault(ln, []).append((doc_id, ""))
-        for al in d.get("law_alias") or []:
-            name2docs.setdefault(norm_name(al), []).append((doc_id, ""))
+        for raw in [d.get("law_name",""), * (d.get("law_alias") or [])]:
+            k = norm_name(raw)
+            if k:
+                name2docs.setdefault(k, []).append((doc_id, ""))
+
     return name2docs
+
 
 def _normalize_articles(raw: Any) -> List[int]:
     """将 article 字段的多形态值统一为正整数列表。"""
