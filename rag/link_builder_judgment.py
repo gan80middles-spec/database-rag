@@ -532,9 +532,10 @@ def main():
 
     # 报表
     if miss:
-        top = sorted(miss.items(), key=lambda x: -x[1])[:10]
-        print("[MISSING LAW NAMES] top 10 (norm):")
-        for k,v in top: print(f"  - {k} ×{v}")
+        sorted_miss = sorted(miss.items(), key=lambda x: (-x[1], x[0]))
+        print("[MISSING LAW NAMES] (norm):")
+        for k, v in sorted_miss:
+            print(f"  - {k} ×{v}")
     if parse_failures:
         top = sorted(parse_failures.items(), key=lambda x: -x[1])[:10]
         print("[PARSE FAILURES] top 10 raw snippets:")
