@@ -1,0 +1,438 @@
+# -*- coding: utf-8 -*-
+"""
+link_builder_judgment.py
+- 从 law_kb_docs 读取“判决/裁定/调解”等文书
+- 解析文书中出现的法规/司法解释引用（含条/款/项）
+- 以 law_kb_docs + law_kb_chunks 双索引定位目标文档 doc_id
+- 建立 law_kb_links:  from_doc=判决书doc_id → to_doc=法规/解释doc_id, edge="applies", articles=[...]
+- 若定位成功，顺带把“裁判文书里的原始全称”追加为该 doc_id 全部 chunk 的 law_alias
+"""
+
+import re
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from collections import defaultdict, Counter
+
+from pymongo import MongoClient, UpdateOne
+
+# === 连接配置 ===
+MONGO_URI = "mongodb://adminUser:~Q2w3e4r@192.168.110.36:27019"
+DB_NAME   = "lawKB"
+COL_DOCS  = "law_kb_docs"
+COL_CHUNKS= "law_kb_chunks"
+COL_LINKS = "law_kb_links"
+
+# 目标“被连接”的文种
+TARGET_DOC_TYPES = {
+    "statute",
+    "judicial_interpretation",
+    "administrative_regulation",  # 可按需增删
+    "local_regulation",
+}
+
+# ---------- 基础正则与工具 ----------
+
+CN_MAP = {"零":0,"〇":0,"一":1,"二":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,"十":10,"百":100,"千":1000}
+def cn_to_int(s: str) -> int:
+    s = str(s or "").strip().replace("第","").replace("条","")
+    if s.isdigit(): return int(s)
+    total, tmp = 0, 0
+    for ch in s:
+        if ch in "十百千":
+            unit = CN_MAP[ch]
+            total = (total or 1) * unit
+            tmp = 0
+        else:
+            v = CN_MAP.get(ch, 0)
+            total += v
+            tmp = v
+    return total or tmp or 0
+
+CN_PREFIX = re.compile(r"^\s*中华人民共和国")
+BRACKETS  = re.compile(r"[()（）\[\]【】＜＞<>]")  # 仅清符号
+MULTI_WS  = re.compile(r"\s+")
+
+def norm_name(s: str) -> str:
+    if not s: return ""
+    s = s.strip().replace("《","").replace("》","")
+    s = CN_PREFIX.sub("", s)
+    # 去“（××修正）”一类括注
+    s = re.sub(r"（[^）]*修正[^）]*）", "", s)
+    s = re.sub(r"\([^)]*修正[^)]*\)", "", s)
+    s = BRACKETS.sub("", s)
+    s = s.replace("　"," ").replace("·"," ")
+    s = MULTI_WS.sub("", s)
+    return s
+
+# 去掉内层书名号〈…〉 / <…>，保留里面文字
+INNER_QUOTES_ANY = re.compile(r"[〈<]\s*([^〉>]+?)\s*[〉>]")
+def strip_inner_quotes(s: str) -> str:
+    return INNER_QUOTES_ANY.sub(r"\1", s or "")
+
+# “关于适用《……法》的解释” → “关于适用……法的解释”
+INNER_LAW = re.compile(r"关于适用\s*[《〈<]\s*([^》〉>]+?)\s*[》〉>]\s*的解释")
+def fix_interpretation_title(raw: str) -> str:
+    s = str(raw or "").strip()
+    m = INNER_LAW.search(s)
+    if m:
+        inner = m.group(1)
+        inner = inner.replace("《","").replace("》","").replace("〈","").replace("〉","").replace("<","").replace(">","").strip()
+        s = INNER_LAW.sub(f"关于适用{inner}的解释", s)
+    return s
+
+# 黑名单：不建边、不计失败
+BLACKLIST_TITLE_REGEX = re.compile(r"(请示的复函|请示的答复|工作会议纪要)")
+def is_blacklisted_title(s: str) -> bool:
+    return bool(BLACKLIST_TITLE_REGEX.search(str(s or "")))
+
+# 《……》第……条（可带括注），允许“第×至第×条”
+LAW_L   = r"[《〈<⟪⟨]"
+LAW_R   = r"[》〉>⟫⟩]"
+BRK_OPT = r"(?:\s*(?:（[^）]*）|\([^)]*\)|\[[^\]]*\]|【[^】]*】))*"
+
+PAT_RANGE = re.compile(
+    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条\s*[-~－—–]\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
+)
+PAT_MAIN = re.compile(
+    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
+    r"(?:\s*第\s*[（(]?[〇零一二三四五六七八九十百千万两\d]+[）)]?\s*款"
+    r"(?:\s*第\s*[（(]?[〇零一二三四五六七八九十百千万两\d]+[）)]?\s*项)?)?"
+)
+
+GENERIC_INTERP = {"最高人民法院关于适用的解释", "关于适用的解释"}
+
+# ---------- 解析“民/行/刑”系统、条号展开 ----------
+def suggest_system(jdoc: dict) -> str:
+    info = (jdoc.get("judgment_info") or {})
+    txts = []
+    for k in ("case_system", "case_type", "cause", "trial_procedure", "title"):
+        v = info.get(k) or jdoc.get(k)
+        if isinstance(v, str):
+            txts.append(v)
+    s = "；".join(txts)
+    if "行政" in s: return "admin"
+    if "刑事" in s: return "criminal"
+    return "civil"
+
+_re_rng = re.compile(r"第(.+?)条\s*[-~－—–]\s*第(.+?)条")
+_re_one = re.compile(r"第(.+?)条")
+def expand_article_no(no: str) -> List[int]:
+    if not no: return []
+    m = _re_rng.match(no)
+    if m:
+        L,R = cn_to_int(m.group(1)), cn_to_int(m.group(2))
+        if L and R and R>=L:
+            return list(range(L, R+1))
+    m = _re_one.match(no)
+    n = cn_to_int(m.group(1)) if m else 0
+    return [n] if n>0 else []
+
+# ---------- 预索引 ----------
+def build_docs_index(D) -> Dict[str, Set[str]]:
+    """
+    law_kb_docs: 规范名/别名 → {doc_id}
+    """
+    name2docs: Dict[str, Set[str]] = defaultdict(set)
+    cur = D.find({"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
+                 {"doc_id":1,"law_name":1,"law_alias":1})
+    for d in cur:
+        did = d["doc_id"]
+        nm = norm_name(d.get("law_name",""))
+        if nm: name2docs[nm].add(did)
+        for al in d.get("law_alias") or []:
+            alnm = norm_name(al)
+            if alnm: name2docs[alnm].add(did)
+    return name2docs
+
+def build_chunks_index(C) -> Tuple[Dict[str, Set[str]], Dict[str, Set[int]]]:
+    """
+    law_kb_chunks:
+      - title_norm → {doc_id}
+      - doc_id → {article numbers}
+    """
+    title2docs: Dict[str, Set[str]] = defaultdict(set)
+    doc2arts: Dict[str, Set[int]]   = defaultdict(set)
+
+    cur = C.find({"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
+                 {"doc_id":1,"title":1,"article_no":1})
+    for d in cur:
+        did = d.get("doc_id")
+        if not did: continue
+        # 标题索引
+        t = d.get("title") or ""
+        t = fix_interpretation_title(strip_inner_quotes(t))
+        tnorm = norm_name(t)
+        if tnorm:
+            title2docs[tnorm].add(did)
+        # 条文索引
+        for n in expand_article_no(d.get("article_no")):
+            doc2arts[did].add(n)
+    return title2docs, doc2arts
+
+# 民法典“担保物权 + 保证合同”的条号集合（从 chunks 的目录推断）
+def collect_civil_guarantee_articles(C, civil_doc_id: str) -> Set[int]:
+    arts: Set[int] = set()
+    q = {"doc_id": civil_doc_id}
+    for d in C.find(q, {"path":1,"article_no":1}):
+        p = d.get("path") or {}
+        bian = (p.get("编") or p.get("篇") or "")  # 兼容不同字段名
+        zhang = p.get("章") or ""
+        fenbian = p.get("分编") or ""
+        jiemu = p.get("节") or ""
+        # 物权编·第四分编 担保物权
+        key = f"{bian} {fenbian} {zhang} {jiemu}"
+        if ("第二编" in key and "物权" in key and ("担保物权" in key or "第十六章" in key or "第十七章" in key or "第十八章" in key or "第十九章" in key)) \
+           or ("担保物权" in key):
+            for n in expand_article_no(d.get("article_no")):
+                arts.add(n)
+        # 合同编·第十三章 保证合同
+        if ("第三编" in key and "合同" in key and ("第十三章" in key or "保证合同" in key)) \
+           or ("保证合同" in key):
+            for n in expand_article_no(d.get("article_no")):
+                arts.add(n)
+    return arts
+
+# ---------- 解析 statutes ----------
+def _normalize_articles(raw: Any) -> List[int]:
+    numbers: Set[int] = set()
+    def collect(value: Any) -> None:
+        if value is None: return
+        if isinstance(value, (list, tuple, set)):
+            for v in value: collect(v); return
+        if isinstance(value, dict):
+            left = value.get("L") or value.get("left") or value.get("start") or value.get("from")
+            right= value.get("R") or value.get("right") or value.get("end") or value.get("to")
+            if left is not None or right is not None:
+                l = cn_to_int(left)
+                r = cn_to_int(right if right is not None else left)
+                if l>0 and r>0:
+                    if r<l: l,r = r,l
+                    for n in range(l, r+1): numbers.add(n)
+                    return
+                if l>0: numbers.add(l)
+                if right is not None:
+                    rn = cn_to_int(right)
+                    if rn>0: numbers.add(rn)
+                return
+            for v in value.values(): collect(v)
+            return
+        n = cn_to_int(value)
+        if n>0: numbers.add(n)
+    collect(raw)
+    return sorted(numbers)
+
+def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[int]]], List[str]]:
+    parsed: List[Tuple[str,str,Optional[int]]] = []
+    failures: List[str] = []
+
+    def emit(law_raw: str, article: Optional[int]) -> bool:
+        lw = law_raw.strip()
+        if not lw: return False
+        law_norm = norm_name(lw)
+        if not law_norm: return False
+        if article is not None and article <= 0: return False
+        parsed.append((law_norm, lw, article))
+        return True
+
+    def handle_item(item: Any) -> None:
+        if isinstance(item, dict):
+            law_raw = item.get("law") or item.get("name") or item.get("title") or ""
+            law_raw = fix_interpretation_title(strip_inner_quotes(law_raw))
+            if is_blacklisted_title(law_raw):
+                return
+            arts_raw = item.get("article")
+            if arts_raw in (None,"",[]): arts_raw = item.get("articles")
+            if arts_raw in (None,"",[]): arts_raw = item.get("article_no")
+            articles = _normalize_articles(arts_raw)
+            ok = False
+            for a in articles:
+                ok = emit(law_raw, a) or ok
+            if not articles and law_raw:
+                ok = emit(law_raw, None) or ok
+            if not ok and (law_raw or arts_raw):
+                failures.append(str(item))
+        elif isinstance(item, str):
+            text = fix_interpretation_title(strip_inner_quotes(item))
+            if is_blacklisted_title(text):
+                return
+            ok = False
+            for m in PAT_RANGE.finditer(text):
+                law_raw, l, r = m.group(1), m.group(2), m.group(3)
+                for a in range(cn_to_int(l), cn_to_int(r)+1):
+                    ok = emit(law_raw, a) or ok
+            for m in PAT_MAIN.finditer(text):
+                law_raw, art_raw = m.group(1), m.group(2)
+                a = cn_to_int(art_raw)
+                ok = emit(law_raw, a) or ok
+            if not ok and text.strip():
+                failures.append(text)
+        else:
+            if item not in (None,"",[]): failures.append(str(item))
+
+    # 结构化与自由文本两路
+    structured = (((jdoc.get("judgment_info") or {}).get("statutes")) or [])
+    for entry in structured: handle_item(entry)
+    for entry in jdoc.get("statutes") or []: handle_item(entry)
+    return parsed, failures
+
+# ---------- 主流程 ----------
+def main():
+    mc = MongoClient(MONGO_URI)
+    DB = mc[DB_NAME]
+    D  = DB[COL_DOCS]
+    C  = DB[COL_CHUNKS]
+    E  = DB[COL_LINKS]
+
+    # 索引（幂等）
+    E.create_index([("from_doc",1),("to_doc",1),("edge",1)])
+
+    # 预索引
+    docs_index   = build_docs_index(D)           # 规范名/别名 → doc_ids
+    titles_index, doc2arts = build_chunks_index(C)  # 标题 → doc_ids；doc_id → 条号集合
+
+    # 三大诉讼法解释 doc_id 映射（短名取自 chunks 标题归一）
+    susu_map: Dict[str, str] = {}
+    for short in ("民事诉讼法解释","行政诉讼法解释","刑事诉讼法解释"):
+        # 优先从标题索引取 doc_id
+        ids = titles_index.get(norm_name(short)) or set()
+        if not ids:
+            # 或从 docs 索引拿
+            ids = docs_index.get(norm_name(short)) or set()
+        if ids:
+            susu_map[short] = list(ids)[0]  # 任取其一（一般唯一）
+
+    # 民法典 doc_id（用于担保法 → 民法典）
+    civil_ids = titles_index.get(norm_name("民法典")) or docs_index.get(norm_name("民法典")) or set()
+    CIVIL_DOC_ID = list(civil_ids)[0] if civil_ids else None
+    CIVIL_GUARANTEE_ARTS = collect_civil_guarantee_articles(C, CIVIL_DOC_ID) if CIVIL_DOC_ID else set()
+
+    # 载入判决类文书
+    q = {"doc_type": "judgment"}
+    fields = {"doc_id":1,"doc_type":1,"judgment_info":1,"statutes":1}
+    judgments = list(D.find(q, fields))
+    print(f"[INFO] judgment docs: {len(judgments)}")
+
+    ops: List[UpdateOne] = []
+    seen = set()
+    miss: Dict[str,int] = {}
+    parse_failures: Dict[str, int] = {}
+
+    def record_failures(items: Iterable[str]) -> None:
+        for it in items:
+            if not it: continue
+            parse_failures[it] = parse_failures.get(it, 0) + 1
+
+    for j in judgments:
+        from_doc = j["doc_id"]
+        case_sys  = suggest_system(j)
+
+        # 解析
+        parsed_statutes, failed_items = parse_statutes_from_doc(j)
+        record_failures(failed_items)
+
+        # 聚合同一法律的条文集合
+        law_to_articles: Dict[str, Set[int]] = {}
+        rawname_cache: Dict[str, str] = {}
+        law_no_articles: Set[str] = set()
+
+        for lname_norm, law_raw, art in parsed_statutes:
+            if lname_norm not in law_to_articles:
+                law_to_articles[lname_norm] = set()
+                rawname_cache[lname_norm]  = law_raw
+            if art is None:
+                law_no_articles.add(lname_norm)
+            else:
+                law_to_articles[lname_norm].add(int(art))
+
+        for lname_norm, arts in law_to_articles.items():
+            # --- 1) 泛称“关于适用的解释” → 民/行/刑 + 条号重合度 ---
+            if lname_norm in GENERIC_INTERP:
+                prefer = {"civil":"民事诉讼法解释","admin":"行政诉讼法解释","criminal":"刑事诉讼法解释"}.get(case_sys)
+                cand: List[Tuple[str,int]] = []  # (doc_id, overlap)
+                for short, did in susu_map.items():
+                    overlap = len(arts & (doc2arts.get(did) or set()))
+                    bias = 100 if short == prefer else 0
+                    cand.append((did, overlap + bias))
+                cand.sort(key=lambda x: -x[1])
+                if cand and cand[0][1] > 0:
+                    to_doc = cand[0][0]
+                    key = (from_doc, to_doc, "applies")
+                    if key not in seen:
+                        seen.add(key)
+                        upd = {"$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]}}
+                        if arts:
+                            upd["$addToSet"] = {"articles": {"$each": sorted(arts)}}
+                        ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
+                        # 回写别名到 chunks
+                        C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
+                    continue
+
+            # --- 2) “担保法/担保法解释” → 民法典（担保物权+保证合同） ---
+            if lname_norm in {"担保法","中华人民共和国担保法","最高人民法院关于适用中华人民共和国担保法若干问题的解释","担保法解释"} and CIVIL_DOC_ID:
+                to_doc = CIVIL_DOC_ID
+                key = (from_doc, to_doc, "applies")
+                if key not in seen:
+                    seen.add(key)
+                    upd = {"$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]},
+                           "$addToSet": {"articles": {"$each": sorted(CIVIL_GUARANTEE_ARTS or list(arts))}}}
+                    ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, upd, upsert=True))
+                    C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
+                continue
+
+            # --- 3) 常规名匹配：docs 索引 / 标题索引 ---
+            candidates: Set[str] = set()
+            # 3.1 docs 索引（规范名/别名）
+            candidates |= (docs_index.get(lname_norm) or set())
+            # 3.2 标题索引（多数解释的标题就是“全称”）
+            candidates |= (titles_index.get(lname_norm) or set())
+
+            # 3.3 特例：建工解释（一）——把无序号全称指向（一）
+            if not candidates and "建设工程施工合同纠纷案件适用法律问题的解释" in rawname_cache[lname_norm]:
+                keyed = norm_name("建设工程施工合同纠纷案件适用法律问题的解释（一）")
+                candidates |= (titles_index.get(keyed) or set()) or (docs_index.get(keyed) or set())
+
+            if not candidates:
+                miss[lname_norm] = miss.get(lname_norm, 0) + 1
+                continue
+
+            # 候选不唯一时：按条号重叠度选择；若没有条号就任取一个
+            best_id, best_ol = None, -1
+            for did in candidates:
+                ol = len(arts & (doc2arts.get(did) or set()))
+                if ol > best_ol:
+                    best_id, best_ol = did, ol
+            to_doc = best_id or list(candidates)[0]
+
+            key = (from_doc, to_doc, "applies")
+            if key in seen: 
+                continue
+            seen.add(key)
+
+            update_doc = {"$setOnInsert": {"law_name_raw": rawname_cache[lname_norm]}}
+            if arts:
+                update_doc["$addToSet"] = {"articles": {"$each": sorted(arts)}}
+            elif lname_norm in law_no_articles:
+                update_doc["$setOnInsert"]["articles"] = []  # 明确“整部/未注明条”
+            ops.append(UpdateOne({"from_doc": from_doc, "to_doc": to_doc, "edge":"applies"}, update_doc, upsert=True))
+
+            # --- 成功命中：把“原始全称”追加为该 doc_id 的所有 chunk 的 law_alias ---
+            C.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": rawname_cache[lname_norm]}})
+
+    # 写入
+    if ops:
+        res = E.bulk_write(ops, ordered=False)
+        print(f"[OK] upsert doc-edges: {res.upserted_count} upserted / {res.modified_count} modified / total_ops={len(ops)}")
+    else:
+        print("[OK] nothing to link")
+
+    # 报表
+    if miss:
+        top = sorted(miss.items(), key=lambda x: -x[1])[:10]
+        print("[MISSING LAW NAMES] top 10 (norm):")
+        for k,v in top: print(f"  - {k} ×{v}")
+    if parse_failures:
+        top = sorted(parse_failures.items(), key=lambda x: -x[1])[:10]
+        print("[PARSE FAILURES] top 10 raw snippets:")
+        for k,v in top: print(f"  - {k} ×{v}")
+
+if __name__ == "__main__":
+    main()
