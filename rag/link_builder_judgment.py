@@ -53,6 +53,22 @@ def norm_name(s: str) -> str:
     return s
 
 
+# === 忽略这类标题（不建边、不计入 PARSE FAILURES）===
+BLACKLIST_TITLE_SUBSTR = {
+    "全国法院民商事审判工作会议纪要",
+    "请示的复函",
+    "请示的答复",
+    "关于请示",
+}
+BLACKLIST_TITLE_REGEX = re.compile(r"(请示的复函|请示的答复|工作会议纪要)")
+
+def is_blacklisted_title(s: str) -> bool:
+    t = str(s or "")
+    if any(k in t for k in BLACKLIST_TITLE_SUBSTR):
+        return True
+    return bool(BLACKLIST_TITLE_REGEX.search(t))
+
+
 # —— 去掉标题里的“内层书名号”（〈…〉 / <…>），只保留里面文字
 INNER_QUOTES_ANY = re.compile(r"[〈<]\s*([^〉>]+?)\s*[〉>]")
 def strip_inner_quotes(s: str) -> str:
@@ -260,6 +276,8 @@ def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[i
         if isinstance(item, dict):
             law_raw = item.get("law") or item.get("name") or item.get("title") or ""
             law_raw = fix_interpretation_title(strip_inner_quotes(law_raw))
+            if is_blacklisted_title(law_raw):
+                return
             arts_raw = item.get("article")
             if arts_raw in (None, "", []):
                 arts_raw = item.get("articles")
@@ -277,6 +295,8 @@ def parse_statutes_from_doc(jdoc: dict) -> Tuple[List[Tuple[str, str, Optional[i
                 failures.append(str(item))
         elif isinstance(item, str):
             text = fix_interpretation_title(strip_inner_quotes(item))
+            if is_blacklisted_title(text):
+                return
             ok = False
 
             for m in PAT_MAIN.finditer(text):
