@@ -240,11 +240,64 @@ PAT_SINGLE = re.compile(
 )
 
 
-@dataclass
-class ParsedLaw:
-    law_norm: str
-    raw_text: str
-    articles: Set[int]
+NAME_BLACKLIST_NORMS = {
+    norm_name("上海市政府信息公开规定"),
+    norm_name("最高人民法院关于适用中华人民共和国合同法若干问题的解释（二）"),
+    norm_name("****法"),
+    norm_name("上海市国有土地上房屋征收与补偿实施细则"),
+    norm_name("北京市住宅专项维修资金管理办法"),
+    norm_name("协调会纪要"),
+    norm_name("浙江省司法鉴定管理条例"),
+    norm_name("第八次全国法院民事商事审判工作会议民事部分纪要"),
+    norm_name("西安市城市集中供热管理条例"),
+    norm_name("西安市集中供热条例"),
+    norm_name("公安机关内部执法监督工作规定"),
+    norm_name("公安机关办理刑事案件程序规定"),
+    norm_name("公安机关办理行政案件程序规定"),
+    norm_name("公安机关鉴定规则"),
+    norm_name("工商行政管理机关行政处罚程序暂行规定"),
+    norm_name("工商行政管理机关行政赔偿实施办法"),
+    norm_name("市场监督管理行政处罚听证办法"),
+    norm_name("市场监督管理行政处罚程序规定"),
+    norm_name("住房和城乡建设部房屋建筑和市政基础设施工程竣工验收备案管理办法"),
+    norm_name("因工死亡职工供养亲属范围规定"),
+    norm_name("关于收取城市基础设施配套费有关问题的规定"),
+    norm_name("道路交通事故处理程序规定"),
+    norm_name("矿业权交易规则"),
+    norm_name("监督规则"),
+    norm_name("人力资源社会保障部最高人民法院关于劳动人事争议仲裁与诉讼衔接有关问题的意见一"),
+    norm_name("劳动争议处理条例"),
+    norm_name("劳动合同法实施条例"),
+    norm_name("国务院关于职工工作时间的规定"),
+    norm_name("国有企业富余职工安置规定"),
+    norm_name("国有土地上房屋征收评估办法"),
+    norm_name("城市房地产开发经营管理条例"),
+    norm_name("失业保险条例"),
+    norm_name("工亡保险条例"),
+    norm_name("建设工程质量保证金管理办法"),
+    norm_name("建设工程质量管理办法"),
+    norm_name("必须招标的工程项目规定"),
+    norm_name("暂行规定"),
+    norm_name("机动车交通事故责任强制保险条例"),
+    norm_name("生产安全事故报告和调查处理条例"),
+    norm_name("矿产资源开采登记管理办法"),
+    norm_name("行政区域界线管理条例"),
+    norm_name("行政区域界限管理条例"),
+    norm_name("证券期货违法行为行政处罚办法"),
+    norm_name("道路交通安全法实施条例"),
+    norm_name("最高人民法院关于****监督程序若干问题的规定"),
+    norm_name("最高人民法院关于人民法院执行工作若干问题的规定试行"),
+    norm_name("最高人民法院关于人民法院赔偿委员会审理****案件程序的规定"),
+    norm_name("最高人民法院关于审理劳动争议案件适用法律若干问题的解释"),
+    norm_name("最高人民法院关于审理涉及夫妻债务纠纷案件适用法律有关问题的解释"),
+    norm_name("最高人民法院关于审理道路事故损害赔偿案件适用若干问题的解释"),
+    norm_name("最高人民法院关于适用中华人民共和国婚姻法若干问题的解释二"),
+    norm_name("最高人民法院关于适用中华人民共和国民法总则诉讼时效制度若干问题的解释"),
+    norm_name("最高人民法院关于适用中华人民共和国行政诉讼法若干问题的解释"),
+    norm_name("最高人民法院关于溯及力和人民法院赔偿委员会受案范围问题的批复"),
+    norm_name("最高人民法院关于审理拒不执行判决、裁定案件具体应用法律若干问题的解释"),
+    norm_name("最高人民法院关于适用时间效力的若干规定")
+}
 
 
 def _parse_structured_item(item: Dict[str, Any]) -> Tuple[str, Set[int]]:

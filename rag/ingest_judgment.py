@@ -269,6 +269,7 @@ def main() -> None:
     ap.add_argument("--mongo_db", default="lawkb")
     ap.add_argument("--mongo_chunk_col", default="law_kb_chunks")
     ap.add_argument("--mongo_doc_col", default="law_kb_docs")
+    ap.add_argument("--mongo_only", type=int, default=0, help="1=仅写Mongo，不连接Milvus/不计算向量")
 
     ap.add_argument("--milvus_host", default="127.0.0.1")
     ap.add_argument("--milvus_port", default="19530")
@@ -283,21 +284,24 @@ def main() -> None:
 
     args = ap.parse_args()
 
-    embedder = load_embedder(args.model)
-    try:
-        args.dim = embedder.get_sentence_embedding_dimension()
-    except Exception:
-        pass
-
-    milvus_col = ensure_milvus_collection(
-        args.collection,
-        args.dim,
-        host=args.milvus_host,
-        port=args.milvus_port,
-        recreate=bool(args.recreate),
-        token=args.milvus_token or None,
-        uri=args.milvus_uri or None,
-    )
+    if not args.mongo_only:
+        embedder = load_embedder(args.model)
+        try:
+            args.dim = embedder.get_sentence_embedding_dimension()
+        except Exception:
+            pass
+    
+    milvus_col = None
+    if not args.mongo_only:
+        milvus_col = ensure_milvus_collection(
+            args.collection,
+            args.dim,
+            host=args.milvus_host,
+            port=args.milvus_port,
+            recreate=bool(args.recreate),
+            token=args.milvus_token or None,
+            uri=args.milvus_uri or None,
+        )
 
     mongo_chunks = ensure_mongo_chunks(args.mongo_uri, args.mongo_db, args.mongo_chunk_col)
     mongo_docs = ensure_mongo_docs(args.mongo_uri, args.mongo_db, args.mongo_doc_col)
@@ -311,9 +315,11 @@ def main() -> None:
         if not rows:
             print("[WARN] empty file, skip")
             continue
-
-        texts = [r.get("text", "") for r in rows]
-        embs = encode_batches(embedder, texts, batch_size=args.batch)
+        if not args.mongo_only:
+            texts = [r.get("text", "") for r in rows]
+            embs = encode_batches(embedder, texts, batch_size=args.batch)
+        else:
+            embs = None
 
         doc_records: Dict[str, Dict[str, Any]] = {}
         chunk_docs: List[Dict[str, Any]] = []
@@ -326,11 +332,11 @@ def main() -> None:
         BATCH = 2000
         for start in range(0, len(chunk_docs), BATCH):
             sub_rows = chunk_docs[start : start + BATCH]
-            sub_emb = embs[start : start + BATCH]
-
             upsert_mongo_chunks(mongo_chunks, sub_rows)
-            batch_rows = build_milvus_rows(sub_rows, sub_emb)
-            insert_milvus(milvus_col, batch_rows)
+            if not args.mongo_only:
+                sub_emb = embs[start : start + BATCH]
+                batch_rows = build_milvus_rows(sub_rows, sub_emb)
+                insert_milvus(milvus_col, batch_rows)
 
         upsert_mongo_docs(mongo_docs, doc_records.values())
 
