@@ -217,30 +217,7 @@ _BLACKLIST_PATTERNS = [
     re.compile(r"纪要$"),
     re.compile(r"(暂行|试行).*(规定|办法|细则)$"),
 ]
-_BLACKLIST_EXACT = {norm_name("全国法院民商事审判工作会议纪要")}
-
-
-def is_blacklisted(name_norm: str) -> bool:
-    if not name_norm:
-        return True
-    if name_norm in _BLACKLIST_EXACT:
-        return True
-    return any(pattern.search(name_norm) for pattern in _BLACKLIST_PATTERNS)
-
-
-# === Parsing statutes inside judgments ===
-LAW_L = r"[《〈<⟪⟨]"
-LAW_R = r"[》〉>⟫⟩]"
-BRK_OPT = r"(?:\s*(?:（[^）]*）|\([^)]*\)|\[[^\]]*\]|【[^】]*】))*"
-PAT_RANGE = re.compile(
-    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条\s*(?:至|到|[-~－—–])\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
-)
-PAT_SINGLE = re.compile(
-    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
-)
-
-
-NAME_BLACKLIST_NORMS = {
+_BLACKLIST_EXACT = {
     norm_name("上海市政府信息公开规定"),
     norm_name("最高人民法院关于适用中华人民共和国合同法若干问题的解释（二）"),
     norm_name("****法"),
@@ -299,6 +276,31 @@ NAME_BLACKLIST_NORMS = {
     norm_name("最高人民法院关于适用时间效力的若干规定")
 }
 
+
+def is_blacklisted(name_norm: str) -> bool:
+    if not name_norm:
+        return True
+    if name_norm in _BLACKLIST_EXACT:
+        return True
+    return any(pattern.search(name_norm) for pattern in _BLACKLIST_PATTERNS)
+
+
+# === Parsing statutes inside judgments ===
+LAW_L = r"[《〈<⟪⟨]"
+LAW_R = r"[》〉>⟫⟩]"
+BRK_OPT = r"(?:\s*(?:（[^）]*）|\([^)]*\)|\[[^\]]*\]|【[^】]*】))*"
+PAT_RANGE = re.compile(
+    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条\s*(?:至|到|[-~－—–])\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
+)
+PAT_SINGLE = re.compile(
+    rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
+)
+
+@dataclass
+class ParsedLaw:
+    law_norm: str
+    raw_text: str
+    articles: Set[int]
 
 def _parse_structured_item(item: Dict[str, Any]) -> Tuple[str, Set[int]]:
     law_raw = (
