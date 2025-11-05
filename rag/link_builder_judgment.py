@@ -50,10 +50,15 @@ _CN_NUMBER = {
     "千": 1000,
 }
 
+for _digit in range(10):
+    _CN_NUMBER[str(_digit)] = _digit
+
 _CN_PREFIX = re.compile(r"^\s*中华人民共和国")
 _BRACKETS = re.compile(r"[()（）\[\]【】＜＞<>〈〉]")
 _INNER_QUOTES = re.compile(r"[〈〈⟨<]\s*([^〉》⟩>]+?)\s*[〉》⟩>]")
 _WS = re.compile(r"\s+")
+
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000, "万": 10000}
 
 
 def cn_to_int(value: Any) -> int:
@@ -77,29 +82,42 @@ def cn_to_int(value: Any) -> int:
             return 0
 
     text = text.replace("第", "").replace("条", "")
+    if not text:
+        return 0
+
     total = 0
-    unit = 1
-    temp = 0
-    last_was_unit = False
+    section = 0
+    number = 0
+
     for char in text:
-        if char in ("十", "百", "千"):
-            unit_value = _CN_NUMBER[char]
-            if temp == 0:
-                temp = 1
-            total += temp * unit_value
-            temp = 0
-            unit = unit_value // 10 if unit_value >= 10 else 1
-            last_was_unit = True
-        else:
-            num = _CN_NUMBER.get(char)
-            if num is None:
+        if char in _CN_UNIT:
+            unit_value = _CN_UNIT[char]
+            if unit_value == 10000:
+                if number:
+                    section += number
+                elif section == 0:
+                    section = 1
+                total += section * unit_value
+                section = 0
+                number = 0
                 continue
-            total += num
-            temp = num
-            unit = 1
-            last_was_unit = False
-    if last_was_unit and temp == 0:
-        total += unit
+            if number == 0:
+                number = 1
+            section += number * unit_value
+            number = 0
+        else:
+            digit = _CN_NUMBER.get(char)
+            if digit is not None:
+                number = number * 10 + digit
+                continue
+            if char.isdigit():
+                number = number * 10 + int(char)
+                continue
+            if char.isspace():
+                continue
+            break
+
+    total += section + number
     return total if total > 0 else 0
 
 
