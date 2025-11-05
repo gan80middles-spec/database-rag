@@ -294,7 +294,9 @@ _BLACKLIST_EXACT = {
     norm_name("最高人民法院关于适用中华人民共和国行政诉讼法若干问题的解释"),
     norm_name("最高人民法院关于溯及力和人民法院赔偿委员会受案范围问题的批复"),
     norm_name("最高人民法院关于审理拒不执行判决、裁定案件具体应用法律若干问题的解释"),
-    norm_name("最高人民法院关于适用时间效力的若干规定")
+    norm_name("最高人民法院关于适用时间效力的若干规定"),
+    norm_name("最高人民法院对<关于担保期间债权人向保证人主张权利的方式及程序问题的请示>的答复"),
+    norm_name("最高人民法院关于债权人在保证期间以特快专递向保证人发出逾期贷款催收通知书但缺乏保证人对邮件签收或拒收的证据能否认定债权人向保证人主张权利的请示的复函")
 }
 
 
@@ -316,6 +318,7 @@ PAT_RANGE = re.compile(
 PAT_SINGLE = re.compile(
     rf"{LAW_L}\s*(.+?)\s*{LAW_R}{BRK_OPT}\s*第\s*([〇零一二三四五六七八九十百千万两\d]+)\s*条"
 )
+TITLE_ONLY = re.compile(rf"{LAW_L}\s*(.+?)\s*{LAW_R}")
 
 @dataclass
 class ParsedLaw:
@@ -430,8 +433,17 @@ def parse_statutes_from_doc(jdoc: Dict[str, Any]) -> Tuple[List[ParsedLaw], List
             for law_raw, arts in _parse_textual_entry(item):
                 push(law_raw, arts)
                 ok = True
-            if not ok and item.strip():
-                failures[item.strip()] += 1
+            if not ok:
+                s = item.strip()
+                if not s:
+                    return
+                # 如果只是《标题》而不带条文号，且命中黑名单或属于“请示/答复/复函/批复”，直接忽略，不记失败
+                m = TITLE_ONLY.search(s)
+                if m:
+                    name_norm = norm_name(m.group(1))
+                    if is_blacklisted(name_norm) or re.search(r"(请示|答复|复函|批复)", s):
+                        return
+                failures[s] += 1
         elif item not in (None, "", []):
             failures[str(item)] += 1
 
