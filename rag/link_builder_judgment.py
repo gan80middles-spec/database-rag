@@ -703,7 +703,16 @@ def main() -> None:
     chunks_col = db[COL_CHUNKS]
     links_col = db[COL_LINKS]
 
-    links_col.create_index([("from_doc", 1), ("to_doc", 1), ("edge", 1)], unique=True)
+    links_col.create_index(
+        [("from_doc", 1), ("to_doc", 1), ("edge", 1)],
+        unique=True,
+        name="from_doc_1_to_doc_1_edge_1_unique",
+        partialFilterExpression={
+            "from_doc": {"$type": "string"},
+            "to_doc": {"$type": "string"},
+            "edge": {"$exists": True},
+        },
+    )
 
     index = build_target_index(db)
     litigation_targets = build_litigation_targets(index)
