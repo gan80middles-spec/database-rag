@@ -619,12 +619,12 @@ def build_civil_sections(db, civil_doc_id: Optional[str]) -> Dict[str, Set[int]]
 
 
 _CIVIL_ROUTING_RULES: Sequence[Tuple[re.Pattern[str], Tuple[str, ...]]] = [
-    (re.compile(r"合同法"), ("合同编",)),
-    (re.compile(r"担保法"), ("担保物权", "保证合同")),
-    (re.compile(r"物权法"), ("物权编",)),
-    (re.compile(r"侵权责任法"), ("侵权责任编",)),
-    (re.compile(r"婚姻法"), ("婚姻家庭编",)),
-    (re.compile(r"民法总则|民法通则"), ("总则编",)),
+    (re.compile(r"^合同法$"), ("合同编",)),  # 只匹配“合同法”，不吃“劳动合同法”
+    (re.compile(r"^担保法$"), ("担保物权",)),
+    (re.compile(r"^物权法$"), ("物权编",)),
+    (re.compile(r"^侵权责任法$"), ("侵权责任编",)),
+    (re.compile(r"^婚姻法$"), ("婚姻家庭编",)),
+    (re.compile(r"^(民法总则|民法通则)$"), ("总则编",)),
 ]
 
 
@@ -634,6 +634,15 @@ def _matches_civil_routing(text: str) -> bool:
     if not text:
         return False
     return any(pattern.search(text) for pattern, _ in _CIVIL_ROUTING_RULES)
+
+
+def is_legacy_civil_statute_name(law_norm: str) -> bool:
+    # 只接受旧法本体；司法解释名里通常有“最高人民法院/解释/规定”等关键词
+    if not law_norm:
+        return False
+    if any(k in law_norm for k in ("最高人民法院", "解释", "规定")):
+        return False
+    return law_norm in {"合同法", "物权法", "侵权责任法", "婚姻法", "民法总则", "民法通则", "担保法"}
 
 
 # === Routing helpers ===
@@ -873,7 +882,11 @@ def main() -> None:
                 alias_chunks: Set[str] = set()
 
                 # —— 新增：旧法 → 民法典时，按『编』写别名 ——
-                if final_doc == routing_ctx.civil_doc_id and SECTION_ALIAS_MODE in {"anchor", "section"}:
+                if (
+                    final_doc == routing_ctx.civil_doc_id
+                    and SECTION_ALIAS_MODE in {"anchor", "section"}
+                    and is_legacy_civil_statute_name(law_norm)
+                ):
                     sec_arts: Set[int] = set()
                     for pat, sec_names in _CIVIL_ROUTING_RULES:
                         if pat.search(law_norm):
