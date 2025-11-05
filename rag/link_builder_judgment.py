@@ -428,6 +428,18 @@ class TargetIndex:
     doc2arts: Dict[str, Set[int]]
     doc2vdate: Dict[str, str]
     doc_meta: Dict[str, Dict[str, Any]]
+    doc_article_chunks: Dict[str, Dict[int, Set[str]]]
+
+    def chunks_for_articles(self, doc_id: str, articles: Iterable[int]) -> Set[str]:
+        if not doc_id:
+            return set()
+        article_map = self.doc_article_chunks.get(doc_id)
+        if not article_map:
+            return set()
+        chunk_ids: Set[str] = set()
+        for article in articles:
+            chunk_ids |= article_map.get(int(article), set())
+        return chunk_ids
 
 
 def build_target_index(db) -> TargetIndex:
@@ -438,6 +450,7 @@ def build_target_index(db) -> TargetIndex:
     doc2arts: Dict[str, Set[int]] = defaultdict(set)
     doc2vdate: Dict[str, str] = {}
     doc_meta: Dict[str, Dict[str, Any]] = {}
+    doc_article_chunks: Dict[str, Dict[int, Set[str]]] = defaultdict(lambda: defaultdict(set))
 
     chunk_cursor = chunks_col.find(
         {"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
@@ -449,6 +462,7 @@ def build_target_index(db) -> TargetIndex:
             "article_no": 1,
             "version_date": 1,
             "doc_type": 1,
+            "chunk_id": 1,
         },
     )
 
@@ -490,7 +504,14 @@ def build_target_index(db) -> TargetIndex:
             if alias_norm:
                 alias2docs[alias_norm].add(doc_id)
 
-        doc2arts[doc_id] |= expand_article_no(chunk.get("article_no"))
+        articles = expand_article_no(chunk.get("article_no"))
+        doc2arts[doc_id] |= articles
+
+        chunk_id = str(chunk.get("chunk_id") or "").strip()
+        if chunk_id:
+            article_map = doc_article_chunks[doc_id]
+            for article in articles:
+                article_map[article].add(chunk_id)
 
     for doc_id, meta in doc_meta.items():
         law_norm = norm_name(meta.get("law_name"))
@@ -499,7 +520,14 @@ def build_target_index(db) -> TargetIndex:
         if doc_id not in doc2vdate and meta.get("version_date"):
             doc2vdate[doc_id] = meta["version_date"]
 
-    return TargetIndex(name2docs, alias2docs, doc2arts, doc2vdate, doc_meta)
+    return TargetIndex(
+        name2docs,
+        alias2docs,
+        doc2arts,
+        doc2vdate,
+        doc_meta,
+        doc_article_chunks,
+    )
 
 
 # === Civil Code sections ===
@@ -507,7 +535,17 @@ _SECTION_PATTERNS: Sequence[Tuple[str, re.Pattern[str]]] = [
     ("总则编", re.compile(r"第一编\s*总则|总则编")),
     ("物权编", re.compile(r"第二编\s*物权|物权编")),
     ("合同编", re.compile(r"第三编\s*合同|合同编")),
-    ("担保物权", re.compile(r"第四分编\s*担保物权|担保物权")),
+    (
+        "担保物权",
+        re.compile(
+            r"(第二编\s*物权.*第(?:十六|十七|十八|十九)章"
+            r"|第十六章\s*一般规定"
+            r"|第十七章\s*抵押权"
+            r"|第十八章\s*质权"
+            r"|第十九章\s*留置权"
+            r"|担保物权)"
+        ),
+    ),
     ("保证合同", re.compile(r"保证合同")),
     ("婚姻家庭编", re.compile(r"第五编\s*婚姻家庭|婚姻家庭编")),
     ("侵权责任编", re.compile(r"第七编\s*侵权责任|侵权责任编")),
@@ -636,6 +674,7 @@ def upsert_edge(
     raw_law_text: str,
     arts: Optional[Set[int]],
     write_alias: bool,
+    alias_chunk_ids: Optional[Set[str]] = None,
 ) -> None:
     query = {"from_doc": from_doc, "to_doc": to_doc, "edge": "applies"}
     update: Dict[str, Any] = {"$setOnInsert": {"law_name_raw": raw_law_text}}
@@ -645,7 +684,12 @@ def upsert_edge(
             update["$addToSet"] = {"articles": {"$each": filtered}}
     links_col.update_one(query, update, upsert=True)
     if write_alias and raw_law_text:
-        chunks_col.update_many({"doc_id": to_doc}, {"$addToSet": {"law_alias": raw_law_text}})
+        alias_filter: Dict[str, Any] = {"doc_id": to_doc}
+        if alias_chunk_ids:
+            alias_filter["chunk_id"] = {"$in": sorted(alias_chunk_ids)}
+        else:
+            return
+        chunks_col.update_many(alias_filter, {"$addToSet": {"law_alias": raw_law_text}})
 
 
 # === Case system detection ===
@@ -770,7 +814,21 @@ def main() -> None:
                 final_doc = to_doc_override
                 final_arts = arts_override if arts_override is not None else (set(arts) if arts else None)
                 write_alias = should_write_alias(parsed.raw_text, law_norm, False, forced_alias)
-                upsert_edge(links_col, chunks_col, from_doc, final_doc, parsed.raw_text, final_arts, write_alias)
+                alias_chunks = (
+                    index.chunks_for_articles(final_doc, final_arts)
+                    if final_arts
+                    else set()
+                )
+                upsert_edge(
+                    links_col,
+                    chunks_col,
+                    from_doc,
+                    final_doc,
+                    parsed.raw_text,
+                    final_arts,
+                    write_alias,
+                    alias_chunks,
+                )
                 continue
 
             name_candidates = index.name2docs.get(law_norm) or set()
@@ -785,7 +843,17 @@ def main() -> None:
             alias_hit = bool(alias_candidates - name_candidates and chosen in alias_candidates)
             final_arts = set(arts)
             write_alias = should_write_alias(parsed.raw_text, law_norm, alias_hit, False)
-            upsert_edge(links_col, chunks_col, from_doc, chosen, parsed.raw_text, final_arts, write_alias)
+            alias_chunks = index.chunks_for_articles(chosen, final_arts)
+            upsert_edge(
+                links_col,
+                chunks_col,
+                from_doc,
+                chosen,
+                parsed.raw_text,
+                final_arts,
+                write_alias,
+                alias_chunks,
+            )
 
     if processed == 0:
         print("[INFO] No judgment documents found.")
