@@ -431,7 +431,6 @@ class TargetIndex:
 
 
 def build_target_index(db) -> TargetIndex:
-    docs_col = db[COL_DOCS]
     chunks_col = db[COL_CHUNKS]
 
     name2docs: Dict[str, Set[str]] = defaultdict(set)
@@ -440,54 +439,63 @@ def build_target_index(db) -> TargetIndex:
     doc2vdate: Dict[str, str] = {}
     doc_meta: Dict[str, Dict[str, Any]] = {}
 
-    doc_cursor = docs_col.find(
-        {"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
-        {"doc_id": 1, "law_name": 1, "version_date": 1, "doc_type": 1},
-    )
-    doc_ids: List[str] = []
-    for doc in doc_cursor:
-        doc_id = doc.get("doc_id")
-        if not doc_id:
-            continue
-        doc_ids.append(doc_id)
-        doc_meta[doc_id] = {
-            "law_name": doc.get("law_name") or "",
-            "version_date": doc.get("version_date") or "",
-            "doc_type": doc.get("doc_type"),
-        }
-        norm = norm_name(doc.get("law_name"))
-        if norm:
-            name2docs[norm].add(doc_id)
-
-    if not doc_ids:
-        return TargetIndex(name2docs, alias2docs, doc2arts, doc2vdate, doc_meta)
-
     chunk_cursor = chunks_col.find(
-        {"doc_id": {"$in": doc_ids}},
-        {"doc_id": 1, "title": 1, "law_name": 1, "law_alias": 1, "article_no": 1, "version_date": 1},
+        {"doc_type": {"$in": list(TARGET_DOC_TYPES)}},
+        {
+            "doc_id": 1,
+            "title": 1,
+            "law_name": 1,
+            "law_alias": 1,
+            "article_no": 1,
+            "version_date": 1,
+            "doc_type": 1,
+        },
     )
+
     for chunk in chunk_cursor:
         doc_id = chunk.get("doc_id")
         if not doc_id:
             continue
+
+        meta = doc_meta.setdefault(
+            doc_id,
+            {
+                "law_name": "",
+                "version_date": "",
+                "doc_type": chunk.get("doc_type"),
+            },
+        )
+
+        law_name = str(chunk.get("law_name") or "").strip()
+        if law_name and len(law_name) > len(meta.get("law_name", "")):
+            meta["law_name"] = law_name
+
+        chunk_vdate = str(chunk.get("version_date") or "")
+        if chunk_vdate and chunk_vdate > meta.get("version_date", ""):
+            meta["version_date"] = chunk_vdate
+            doc2vdate[doc_id] = chunk_vdate
+        elif meta.get("version_date") and doc_id not in doc2vdate:
+            doc2vdate[doc_id] = meta["version_date"]
+
         title_norm = norm_title(chunk.get("title"))
         if title_norm:
             name2docs[title_norm].add(doc_id)
-        law_norm = norm_name(chunk.get("law_name"))
+
+        law_norm = norm_name(law_name)
         if law_norm:
             name2docs[law_norm].add(doc_id)
+
         for alias in chunk.get("law_alias") or []:
             alias_norm = norm_title(alias)
             if alias_norm:
                 alias2docs[alias_norm].add(doc_id)
+
         doc2arts[doc_id] |= expand_article_no(chunk.get("article_no"))
-        chunk_vdate = chunk.get("version_date") or ""
-        base_vdate = doc_meta.get(doc_id, {}).get("version_date") or ""
-        if chunk_vdate and chunk_vdate > base_vdate:
-            doc2vdate[doc_id] = chunk_vdate
-        elif base_vdate and doc_id not in doc2vdate:
-            doc2vdate[doc_id] = base_vdate
+
     for doc_id, meta in doc_meta.items():
+        law_norm = norm_name(meta.get("law_name"))
+        if law_norm:
+            name2docs[law_norm].add(doc_id)
         if doc_id not in doc2vdate and meta.get("version_date"):
             doc2vdate[doc_id] = meta["version_date"]
 
