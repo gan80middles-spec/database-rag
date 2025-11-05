@@ -625,6 +625,14 @@ _CIVIL_ROUTING_RULES: Sequence[Tuple[re.Pattern[str], Tuple[str, ...]]] = [
 ]
 
 
+# Allow skipping alias updates when we intentionally route legacy single laws to
+# the Civil Code. The patterns above cover these legacy names.
+def _matches_civil_routing(text: str) -> bool:
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern, _ in _CIVIL_ROUTING_RULES)
+
+
 # === Routing helpers ===
 GENERIC_INTERP_NORMS = {
     norm_name("最高人民法院关于适用的解释"),
@@ -699,7 +707,11 @@ def should_write_alias(raw_text: str, law_norm: str, alias_hit: bool, forced: bo
     if forced or alias_hit:
         return True
     cleaned = canonicalize_raw(raw_text)
-    return cleaned != law_norm
+    if not cleaned or cleaned == law_norm:
+        return False
+    if _matches_civil_routing(law_norm) or _matches_civil_routing(cleaned):
+        return False
+    return True
 
 
 def upsert_edge(
