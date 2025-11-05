@@ -354,6 +354,31 @@ def _parse_textual_entry(entry: str) -> Iterator[Tuple[str, Set[int]]]:
         yield law_raw, {article}
 
 
+def _iter_judgment_statute_sources(jdoc: Dict[str, Any]) -> Iterator[Any]:
+    info = jdoc.get("judgment_info") or {}
+    meta = info.get("meta") if isinstance(info, dict) else None
+    sources: List[Any] = [
+        info.get("statutes") if isinstance(info, dict) else None,
+        meta.get("statutes") if isinstance(meta, dict) else None,
+        jdoc.get("statutes"),
+    ]
+    seen_ids: Set[int] = set()
+    for source in sources:
+        if not source:
+            continue
+        if id(source) in seen_ids:
+            continue
+        seen_ids.add(id(source))
+        if isinstance(source, (list, tuple, set)):
+            for item in source:
+                if item not in (None, "", []):
+                    yield item
+        elif isinstance(source, dict):
+            yield source
+        else:
+            yield source
+
+
 def parse_statutes_from_doc(jdoc: Dict[str, Any]) -> Tuple[List[ParsedLaw], List[str]]:
     aggregated: Dict[str, ParsedLaw] = {}
     failures: Counter[str] = Counter()
@@ -389,10 +414,7 @@ def parse_statutes_from_doc(jdoc: Dict[str, Any]) -> Tuple[List[ParsedLaw], List
         elif item not in (None, "", []):
             failures[str(item)] += 1
 
-    info_statutes = ((jdoc.get("judgment_info") or {}).get("statutes") or [])
-    for entry in info_statutes:
-        handle(entry)
-    for entry in jdoc.get("statutes") or []:
+    for entry in _iter_judgment_statute_sources(jdoc):
         handle(entry)
 
     return list(aggregated.values()), list(failures.elements())
@@ -627,11 +649,21 @@ _CASE_HINTS = {
 
 def detect_case_system(jdoc: Dict[str, Any]) -> str:
     info = jdoc.get("judgment_info") or {}
+    meta = info.get("meta") if isinstance(info, dict) else None
     text_parts: List[str] = []
+    containers: List[Dict[str, Any]] = []
+    if isinstance(info, dict):
+        containers.append(info)
+    if isinstance(meta, dict):
+        containers.append(meta)
+    if isinstance(jdoc, dict):
+        containers.append(jdoc)
     for key in ("case_system", "case_type", "cause", "trial_procedure", "title"):
-        value = info.get(key) or jdoc.get(key)
-        if isinstance(value, str):
-            text_parts.append(value)
+        for container in containers:
+            value = container.get(key)
+            if isinstance(value, str):
+                text_parts.append(value)
+                break
     combined = "；".join(text_parts)
     for system, hints in _CASE_HINTS.items():
         if any(hint in combined for hint in hints):
