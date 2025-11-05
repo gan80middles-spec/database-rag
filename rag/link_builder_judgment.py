@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 from pymongo import MongoClient
 
@@ -531,50 +531,68 @@ def build_target_index(db) -> TargetIndex:
 
 
 # === Civil Code sections ===
-_SECTION_PATTERNS: Sequence[Tuple[str, re.Pattern[str]]] = [
-    ("总则编", re.compile(r"第一编\s*总则|总则编")),
-    ("物权编", re.compile(r"第二编\s*物权|物权编")),
-    ("合同编", re.compile(r"第三编\s*合同|合同编")),
+SectionPredicate = Callable[[Dict[str, Any]], bool]
+
+
+def _path_value(path: Dict[str, Any], key: str) -> str:
+    if not isinstance(path, dict):
+        return ""
+    value = path.get(key)
+    return str(value or "")
+
+
+_GUARANTEE_CHAPTERS = {
+    "第十六章 一般规定",
+    "第十七章 抵押权",
+    "第十八章 质权",
+    "第十九章 留置权",
+}
+
+
+def _bia_with_prefix(path: Dict[str, Any], prefix: str) -> bool:
+    return _path_value(path, "编").startswith(prefix)
+
+
+_SECTION_RULES: Sequence[Tuple[str, SectionPredicate]] = [
+    ("总则编", lambda path: _bia_with_prefix(path, "第一编")),
+    ("物权编", lambda path: _bia_with_prefix(path, "第二编")),
+    ("合同编", lambda path: _bia_with_prefix(path, "第三编")),
     (
         "担保物权",
-        re.compile(
-            r"(第二编\s*物权.*第(?:十六|十七|十八|十九)章"
-            r"|第十六章\s*一般规定"
-            r"|第十七章\s*抵押权"
-            r"|第十八章\s*质权"
-            r"|第十九章\s*留置权"
-            r"|担保物权)"
+        lambda path: _bia_with_prefix(path, "第二编")
+        and _path_value(path, "章") in _GUARANTEE_CHAPTERS,
+    ),
+    (
+        "保证合同",
+        lambda path: _bia_with_prefix(path, "第三编")
+        and (
+            "保证合同" in _path_value(path, "章")
+            or "保证合同" in _path_value(path, "节")
         ),
     ),
-    ("保证合同", re.compile(r"保证合同")),
-    ("婚姻家庭编", re.compile(r"第五编\s*婚姻家庭|婚姻家庭编")),
-    ("侵权责任编", re.compile(r"第七编\s*侵权责任|侵权责任编")),
+    ("婚姻家庭编", lambda path: _bia_with_prefix(path, "第五编")),
+    ("侵权责任编", lambda path: _bia_with_prefix(path, "第七编")),
 ]
 
 
 def build_civil_sections(db, civil_doc_id: Optional[str]) -> Dict[str, Set[int]]:
     if not civil_doc_id:
         return {}
-    sections: Dict[str, Set[int]] = {name: set() for name, _ in _SECTION_PATTERNS}
+    sections: Dict[str, Set[int]] = {name: set() for name, _ in _SECTION_RULES}
     chunks_col = db[COL_CHUNKS]
     cursor = chunks_col.find(
         {"doc_id": civil_doc_id},
         {"path": 1, "title": 1, "article_no": 1},
     )
     for chunk in cursor:
-        parts: List[str] = []
         path = chunk.get("path") or {}
-        if isinstance(path, dict):
-            parts.extend(str(v or "") for v in path.values())
-        title = chunk.get("title") or ""
-        if title:
-            parts.append(str(title))
-        joined = " ".join(parts)
         articles = expand_article_no(chunk.get("article_no"))
         if not articles:
             continue
-        for section_name, pattern in _SECTION_PATTERNS:
-            if pattern.search(joined):
+        if not isinstance(path, dict):
+            continue
+        for section_name, predicate in _SECTION_RULES:
+            if predicate(path):
                 sections[section_name] |= articles
     return {name: arts for name, arts in sections.items() if arts}
 
