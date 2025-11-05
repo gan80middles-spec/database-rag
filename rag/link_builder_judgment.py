@@ -51,7 +51,7 @@ _CN_NUMBER = {
 }
 
 _CN_PREFIX = re.compile(r"^\s*中华人民共和国")
-_BRACKETS = re.compile(r"[()（）\[\]【】＜＞<>]")
+_BRACKETS = re.compile(r"[()（）\[\]【】＜＞<>〈〉]")
 _INNER_QUOTES = re.compile(r"[〈〈⟨<]\s*([^〉》⟩>]+?)\s*[〉》⟩>]")
 _WS = re.compile(r"\s+")
 
@@ -727,6 +727,8 @@ def main() -> None:
 
     civil_doc_candidates = []
     for doc_id, meta in index.doc_meta.items():
+        if meta.get("doc_type") != "statute":
+            continue
         name_norm = norm_name(meta.get("law_name"))
         if "民法典" in name_norm:
             civil_doc_candidates.append((meta.get("version_date") or "", doc_id))
