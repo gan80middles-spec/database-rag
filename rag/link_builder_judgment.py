@@ -31,6 +31,9 @@ TARGET_DOC_TYPES = {"statute", "judicial_interpretation"}
 GE_I_DOC = "JI-SPC-CONSTRUCTION-CONTRACT-DISPUTE-I-20201229"
 MAX_ARTS_PER_EDGE = 20
 
+# 将旧法名写到民法典的哪个范围：none / anchor / section
+SECTION_ALIAS_MODE = "section"
+
 # === Normalisation helpers ===
 _CN_NUMBER = {
     "零": 0,
@@ -862,13 +865,34 @@ def main() -> None:
             )
             if to_doc_override:
                 final_doc = to_doc_override
-                final_arts = arts_override if arts_override is not None else (set(arts) if arts else None)
+                # 不回退到原始条号：None 或 空集 => 都视为不写 articles
+                final_arts = arts_override if arts_override else None
+
+                # 默认的 alias 判定（民法典路由时通常为 False）
                 write_alias = should_write_alias(parsed.raw_text, law_norm, False, forced_alias)
-                alias_chunks = (
-                    index.chunks_for_articles(final_doc, final_arts)
-                    if final_arts
-                    else set()
-                )
+                alias_chunks: Set[str] = set()
+
+                # —— 新增：旧法 → 民法典时，按『编』写别名 ——
+                if final_doc == routing_ctx.civil_doc_id and SECTION_ALIAS_MODE in {"anchor", "section"}:
+                    sec_arts: Set[int] = set()
+                    for pat, sec_names in _CIVIL_ROUTING_RULES:
+                        if pat.search(law_norm):
+                            for sec in sec_names:
+                                sec_arts |= routing_ctx.civil_sections.get(sec, set())
+                            break
+
+                    if sec_arts:
+                        if SECTION_ALIAS_MODE == "anchor":
+                            # 仅写入该编“首条”所在 chunk（更保守）
+                            first_art = min(sec_arts)
+                            alias_chunks = index.chunks_for_articles(final_doc, {first_art})
+                        else:  # "section"
+                            # 写入该编的所有 chunk（你现在想要的效果）
+                            alias_chunks = index.chunks_for_articles(final_doc, sec_arts)
+
+                        # 民法典路由默认 should_write_alias 会拒绝，这里显式放行
+                        write_alias = bool(alias_chunks)
+
                 upsert_edge(
                     links_col,
                     chunks_col,
