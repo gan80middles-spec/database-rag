@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -27,7 +28,7 @@ RAW_KEYWORDS = {
     "lease": "租赁｜出租｜承租｜租金｜押金｜续租｜退租",
     "labor": "劳动合同｜用工｜聘用｜试用期｜社保｜工资｜加班｜解除｜竞业",
     "outsourcing": "服务外包｜技术服务｜咨询服务｜运维｜SLA｜服务等级｜里程碑｜服务费",
-    "nda": "保密协议｜不披露协议｜NDA｜披露方｜接收方｜保密信息｜例外｜返还｜保密期限",
+    "nda": "保密协议｜不披露协议｜NDA｜披露方｜接收方｜保密信息｜保密期限",
     "software": "软件许可｜使用许可｜授权协议｜SaaS｜API｜数据许可｜数据使用协议｜DPA｜著作权｜用户数",
 }
 
@@ -36,6 +37,50 @@ KEYWORDS = {
     label: tuple(keyword.strip() for keyword in keywords.split("｜") if keyword.strip())
     for label, keywords in RAW_KEYWORDS.items()
 }
+
+
+NDA_STRONG_ANCHORS = [
+    r"保密协议",
+    r"不披露协议",
+    r"\bNDA\b",
+    r"保密信息",
+    r"披露方",
+    r"接收方",
+    r"保密期限",
+]
+
+NDA_EXCLUDES_INSURANCE = [
+    r"保险",
+    r"保单",
+    r"被保险人",
+    r"投保人",
+    r"身故",
+    r"保险金额",
+    r"现金价值",
+    r"核保",
+    r"退保",
+    r"宽限期",
+    r"保费",
+]
+
+_anchor_re = [re.compile(pattern, re.IGNORECASE) for pattern in NDA_STRONG_ANCHORS]
+_excl_re = [re.compile(pattern, re.IGNORECASE) for pattern in NDA_EXCLUDES_INSURANCE]
+
+
+def _count_matches(patterns, text: str) -> int:
+    return sum(1 for pattern in patterns if pattern.search(text))
+
+
+def _nda_gate(title: str, body: str) -> bool:
+    """Return True if the NDA label should be allowed based on strong anchors."""
+
+    title = title or ""
+    body = body or ""
+
+    anchors = _count_matches(_anchor_re, title) + _count_matches(_anchor_re, body)
+    has_insurance = any(pattern.search(title) or pattern.search(body) for pattern in _excl_re)
+
+    return anchors >= 2 and not has_insurance
 
 
 SUPPORTED_TEXT_EXTENSIONS = {".txt"}
@@ -101,6 +146,8 @@ def classify(title: str, body: str) -> Tuple[str, Dict[str, int]]:
 
     scores = score(title, body)
     label = _classify_scores(scores)
+    if label == "nda" and not _nda_gate(title, body):
+        label = "uncertain"
     return label, scores
 
 
