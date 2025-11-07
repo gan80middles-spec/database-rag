@@ -7,7 +7,7 @@ pdf2txt_unified.py — PDF 正文 + 表格线性化，统一输出到一个 TXT
 """
 
 from __future__ import annotations
-import argparse, math, re
+import argparse, math, re, statistics
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -120,6 +120,79 @@ def repair_checkboxes(text: str, page=None) -> str:
             norm.append(line)
     return "\n".join(norm)
 
+# -------- 表格遮蔽辅助工具 --------
+def find_table_bboxes(pdf_path: Path, page_index: int):
+    import pdfplumber
+
+    bboxes = []
+    with pdfplumber.open(str(pdf_path)) as doc:
+        page = doc.pages[page_index]
+        settings_lines = {
+            "vertical_strategy": "lines",
+            "horizontal_strategy": "lines",
+            "intersection_tolerance": 5,
+            "snap_tolerance": 3,
+            "join_tolerance": 3,
+            "edge_min_length": 3,
+        }
+        tables = page.find_tables(table_settings=settings_lines) or []
+        if not tables:
+            settings_text = {
+                "vertical_strategy": "text",
+                "horizontal_strategy": "text",
+                "text_x_tolerance": 2,
+                "text_y_tolerance": 2,
+            }
+            tables = page.find_tables(table_settings=settings_text) or []
+        for t in tables:
+            bboxes.append(tuple(t.bbox))
+    return bboxes
+
+
+def _rect_intersect(a, b, pad=0.0):
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    ax0 -= pad
+    ay0 -= pad
+    ax1 += pad
+    ay1 += pad
+    bx0 -= pad
+    by0 -= pad
+    bx1 += pad
+    by1 += pad
+    return not (ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0)
+
+
+def extract_page_text_without_tables(doc, page_index: int, sort=True, table_bboxes=None):
+    page = doc.load_page(page_index)
+    words = page.get_text("words", sort=sort) or []
+    keep = []
+    if table_bboxes:
+        for w in words:
+            wx0, wy0, wx1, wy1, wtext, *_ = w
+            wbox = (wx0, wy0, wx1, wy1)
+            if any(_rect_intersect(wbox, tb, pad=0.5) for tb in table_bboxes):
+                continue
+            keep.append(w)
+    else:
+        keep = words
+
+    keep.sort(key=lambda x: (x[5], x[6], x[1], x[0]))
+    lines = []
+    cur_key = None
+    buf = []
+    for w in keep:
+        key = (w[5], w[6])
+        if key != cur_key and buf:
+            lines.append(" ".join(buf))
+            buf = []
+        buf.append(w[4])
+        cur_key = key
+    if buf:
+        lines.append(" ".join(buf))
+    text = "\n".join(lines)
+    return text
+
 # -------- 表格抽取（pdfplumber）与线性化 --------
 def dedupe_doubled_chars(s: str) -> str:
     if not s:
@@ -204,123 +277,110 @@ def _extract_tables_on_page(pdf_path: Path, page_index: int) -> List[List[List[s
                 tables_all.append(rows)
     return tables_all
 
-def _looks_like_header(cells: List[str]) -> bool:
-    """启发式：是否像表头（含汉字、少数字、无长串数值）。"""
-    if not cells: 
+def _col_stats(col_vals: List[str]):
+    lens = [len(v) for v in col_vals if v]
+    avg_len = statistics.mean(lens) if lens else 0.0
+    zh_ratio = (
+        statistics.mean([
+            sum(1 for ch in v if "\u4e00" <= ch <= "\u9fff") / max(1, len(v))
+            for v in col_vals if v
+        ])
+        if col_vals
+        else 0.0
+    )
+    num_like = [bool(re.fullmatch(r"[0-9一二三四五六七八九十]+", (v or "").strip())) for v in col_vals]
+    num_ratio = sum(num_like) / max(1, len(col_vals))
+    pure_num_ratio = sum(bool(re.fullmatch(r"\d+", (v or "").strip())) for v in col_vals) / max(1, len(col_vals))
+    return dict(avg_len=avg_len, zh_ratio=zh_ratio, num_ratio=num_ratio, pure_num_ratio=pure_num_ratio)
+
+
+def _is_id_column(vals: List[str]) -> bool:
+    stripped = []
+    for v in vals:
+        v = (v or "").strip()
+        if v == "":
+            continue
+        m = re.fullmatch(r"\d+", v)
+        if m:
+            stripped.append(int(v))
+        else:
+            return False
+    if len(stripped) < max(2, math.ceil(0.5 * len(vals))):
         return False
-    txt = " ".join(cells)
-    has_cjk = re.search(r"[\u4e00-\u9fff]", txt) is not None
-    many_digits = len(re.findall(r"\d", txt)) > max(4, len(txt) * 0.4)
-    return has_cjk and not many_digits
+    inc = all(stripped[i] <= stripped[i + 1] for i in range(len(stripped) - 1))
+    return inc
+
+
+def _merge_cont_rows(rows, idx_no, idx_name, idx_desc):
+    merged = []
+    for row in rows:
+        def get(i):
+            return (row[i].strip() if i is not None and i < len(row) and row[i] else "")
+
+        no = get(idx_no)
+        name = get(idx_name)
+        desc = get(idx_desc)
+        if (not no and not name) and desc and merged:
+            merged[-1]["desc"].append(desc)
+        else:
+            merged.append({"no": no, "name": name, "desc": [desc] if desc else [], "raw": row})
+    return merged
+
 
 def linearize_table(rows: List[List[str]], known_order: Optional[List[str]] = None) -> str:
-    """
-    将表格改写为可读文本。优先识别 '编号/序号'、'模块名称'、'内容说明' 等列名；
-    若无法确定表头，则以“第i行”形式输出并按列顺序列出。
-    """
     if not rows:
         return ""
 
-    # 1) 表头检测
+    rows = [[re.sub(r"\s+", " ", dedupe_doubled_chars((c or "").strip())) for c in row] for row in rows]
+
     header = rows[0]
     data = rows[1:]
-    if not _looks_like_header(header):
-        # 首行不像表头：用默认列名 C1,C2...
+
+    def looks_like_header(cells):
+        if not cells:
+            return False
+        txt = " ".join(cells)
+        has_zh = re.search(r"[\u4e00-\u9fff]", txt) is not None
+        many_digits = len(re.findall(r"\d", txt)) > max(4, len(txt) * 0.3)
+        return has_zh and not many_digits and (max(len(c) for c in cells) if cells else 0) <= 20
+
+    if not looks_like_header(header):
         header = [f"列{j+1}" for j in range(len(rows[0]))]
         data = rows
-    # 列名标准化
-    header_norm = [re.sub(r"\s+", "", h or "") for h in header]
-    alias = {
-        "编号": ["编号", "序号", "編號", "序", "序號", "序列", "号"],
-        "模块名称": [
-            "模块名称", "模块名", "模块", "名称", "模塊名稱", "项目名称", "项目", "子项目", "模组",
-            "品目", "品目编码", "服务范围", "服务要求", "服务标准"
-        ],
-        "内容说明": [
-            "内容说明", "说明", "描述", "內容說明", "内容", "详情", "详细", "服务范围",
-            "服务要求", "服务标准", "标准", "要求"
-        ],
-    }
-    def find_col(name: str) -> Optional[int]:
-        cands = alias.get(name, []) + [name]
-        for i, h in enumerate(header_norm):
-            if any(k == h or k in h for k in cands):
-                return i
-        return None
 
-    idx_no   = find_col("编号")
-    idx_mod  = find_col("模块名称")
-    idx_desc = find_col("内容说明")
+    cols = list(zip(*data)) if data else [[] for _ in header]
+    stats = [_col_stats(list(c)) for c in cols] if cols else []
 
-    num_cols = len(header)
-    desc_index = idx_desc if idx_desc is not None else (num_cols - 1 if num_cols else None)
+    idx_id_candidates = [j for j, c in enumerate(cols) if _is_id_column(list(c))]
+    idx_no = idx_id_candidates[0] if idx_id_candidates else None
 
-    def row_values(row: List[str]) -> List[str]:
-        return [(row[j] if j < len(row) else "").strip() for j in range(num_cols)]
+    idx_desc = max(range(len(header)), key=lambda j: stats[j]["avg_len"]) if header else None
 
-    merged_rows: List[Dict[str, object]] = []
-    for row in data:
-        values = row_values(row)
-        no_val = values[idx_no] if idx_no is not None and idx_no < len(values) else ""
-        mod_val = values[idx_mod] if idx_mod is not None and idx_mod < len(values) else ""
-        desc_val = values[desc_index] if desc_index is not None and desc_index < len(values) else ""
-        should_merge = False
-        if desc_index is not None and desc_val:
-            if (not no_val and not mod_val) and merged_rows:
-                others = [values[j] for j in range(num_cols) if j != desc_index and values[j]]
-                if not others:
-                    should_merge = True
-        if should_merge:
-            last = merged_rows[-1]
-            last_desc: List[str] = last.setdefault("desc", [])  # type: ignore
-            last_desc.append(desc_val)
-            if desc_index is not None:
-                joined = "；".join(last_desc)
-                last_values: List[str] = last["values"]  # type: ignore
-                last_values[desc_index] = joined
-            continue
-        entry: Dict[str, object] = {
-            "values": values,
-            "desc": [desc_val] if (desc_index is not None and desc_val) else [],
-            "no": no_val,
-            "mod": mod_val,
-        }
-        merged_rows.append(entry)
+    candidates = [j for j in range(len(header)) if j != idx_desc]
+    idx_name = max(candidates, key=lambda j: (stats[j]["zh_ratio"], -abs(stats[j]["avg_len"] - 12))) if candidates else None
 
-    out_lines: List[str] = []
-    if idx_desc is not None:
-        for ridx, entry in enumerate(merged_rows, start=1):
-            values = entry["values"]  # type: ignore
-            number = str(entry.get("no")) if entry.get("no") else str(ridx)
-            out_lines.append(f"编号{number}：")
-            if idx_mod is not None:
-                mod_val = values[idx_mod]
-                if mod_val:
-                    out_lines.append(f"模块名称: {mod_val}")
-            desc_items: List[str] = entry.get("desc", [])  # type: ignore
-            desc_val = "；".join(desc_items) if desc_items else (values[idx_desc] if values[idx_desc] else "")
-            if desc_val:
-                out_lines.append(f"内容说明: {desc_val}")
-            used = {c for c in [idx_no, idx_mod, idx_desc] if c is not None}
+    merged = _merge_cont_rows(data, idx_no, idx_name, idx_desc)
+
+    out = []
+    for ridx, item in enumerate(merged, start=1):
+        no = item["no"] or str(ridx)
+        out.append(f"编号{no}：")
+        if idx_name is not None:
+            name = item["name"]
+            if name:
+                out.append(f"模块名称: {name}")
+        if idx_desc is not None:
+            desc = "；".join([d for d in item["desc"] if d])
+            if desc:
+                out.append(f"内容说明: {desc}")
+        if (idx_name is None and idx_desc is None) or (not item["name"] and not item["desc"]):
+            row = item["raw"]
             for j, h in enumerate(header):
-                if j in used:
-                    continue
-                val = values[j]
-                if val:
-                    label = h or f"列{j+1}"
-                    out_lines.append(f"{label}: {val}")
-            out_lines.append("")
-    else:
-        for ridx, entry in enumerate(merged_rows, start=1):
-            values = entry["values"]  # type: ignore
-            out_lines.append(f"第{ridx}行：")
-            for j, h in enumerate(header):
-                val = values[j]
-                if val:
-                    label = h or f"列{j+1}"
-                    out_lines.append(f"{label}: {val}")
-            out_lines.append("")
-    return "\n".join(out_lines).rstrip()
+                cell = row[j] if j < len(row) else ""
+                if cell.strip():
+                    out.append(f"{h}: {cell.strip()}")
+        out.append("")
+    return "\n".join(out).rstrip()
 
 # -------- 整体流程：逐页正文 + 表格线性化 并入同一 TXT --------
 def pdf_to_unified_txt(pdf_path: Path, out_txt: Path, sort_text: bool = True) -> None:
@@ -329,7 +389,8 @@ def pdf_to_unified_txt(pdf_path: Path, out_txt: Path, sort_text: bool = True) ->
     pages_out: List[str] = []
     for pno in range(len(doc)):
         page = doc.load_page(pno)
-        text = page.get_text("text", sort=sort_text)
+        table_bboxes = find_table_bboxes(pdf_path, pno)
+        text = extract_page_text_without_tables(doc, pno, sort=sort_text, table_bboxes=table_bboxes)
         text = clean_text(text)
         text = repair_checkboxes(text, page)
 
