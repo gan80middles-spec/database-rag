@@ -7,9 +7,9 @@ pdf2txt_unified.py — PDF 正文 + 表格线性化，统一输出到一个 TXT
 """
 
 from __future__ import annotations
-import argparse, re
+import argparse, math, re
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # -------- 基础清洗与复选框修复 --------
 def clean_text(text: str) -> str:
@@ -21,28 +21,147 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)       # 压缩多余空行
     return text
 
-def repair_checkboxes(text: str) -> str:
+def _normalize_line_key(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+def _detect_checkbox_lines(page) -> List[Tuple[str, bool]]:
+    if page is None:
+        return []
+    words = page.get_text("words") or []
+    line_map: Dict[Tuple[int, int], List[Tuple[int, float, float, float, float, str]]] = {}
+    for x0, y0, x1, y1, word, block, line, word_no in words:
+        key = (block, line)
+        line_map.setdefault(key, []).append((word_no, x0, y0, x1, y1, word))
+    results: List[Tuple[str, bool]] = []
+    for key in sorted(line_map.keys()):
+        items = sorted(line_map[key], key=lambda t: t[0])
+        text = " ".join(it[5] for it in items)
+        checked = False
+        boxes: List[Tuple[float, float]] = []
+        ticks: List[Tuple[float, float]] = []
+        for _, x0, y0, x1, y1, word in items:
+            cx = (x0 + x1) / 2.0
+            cy = (y0 + y1) / 2.0
+            if "☑" in word:
+                checked = True
+            for ch in word:
+                if ch == "☐":
+                    boxes.append((cx, cy))
+                elif ch == "✓":
+                    ticks.append((cx, cy))
+        if not checked and boxes and ticks:
+            for bx, by in boxes:
+                for tx, ty in ticks:
+                    if math.hypot(bx - tx, by - ty) < 25:
+                        checked = True
+                        break
+                if checked:
+                    break
+        results.append((text, checked))
+    return results
+
+def repair_checkboxes(text: str, page=None) -> str:
     lines = text.splitlines()
-    out = []
-    for l in lines:
-        s = l.strip()
-        if s in {"☐✓", "☑", "✓", "☐ ✓"} and out:
-            out[-1] = out[-1].replace("☐", "☑", 1)
+    detected = _detect_checkbox_lines(page)
+    detected_keys = [_normalize_line_key(t) for t, _ in detected]
+    detected_idx = 0
+
+    def lookup_checked(line: str) -> bool:
+        nonlocal detected_idx
+        if not detected:
+            return False
+        key = _normalize_line_key(line)
+        if not key:
+            return False
+        for i in range(detected_idx, len(detected)):
+            if detected_keys[i] == key:
+                detected_idx = i + 1
+                return detected[i][1]
+        return False
+
+    line_items = []
+    for line in lines:
+        item_checked = lookup_checked(line)
+        if "☑" in line:
+            item_checked = True
+        line_items.append({"line": line, "checked": item_checked})
+
+    merged: List[Dict[str, object]] = []
+    for item in line_items:
+        stripped = item["line"].strip()
+        if stripped in {"☐✓", "☑", "✓", "☐ ✓"} and merged:
+            prev = merged[-1]
+            prev_line = str(prev["line"]).replace("☐", "☑", 1)
+            prev["line"] = prev_line
+            prev["checked"] = True
         else:
-            out.append(l)
+            merged.append(item)
+
+    AMT_CN = r"[壹贰叁肆伍陆柒捌玖拾佰仟万亿零]+元"
+    amt_pattern = re.compile(AMT_CN + r"|¥\s*\d[\d,]*\.?\d*")
+    for idx, item in enumerate(merged):
+        line_text = str(item["line"])
+        ctx = line_text
+        if idx + 1 < len(merged):
+            ctx += " " + str(merged[idx + 1]["line"])
+        if "固定总价合同" in line_text and amt_pattern.search(ctx):
+            item["checked"] = True
+
     norm = []
-    for l in out:
-        m = re.match(r"^([ \t]*)([☐☑])\s*(.*)$", l)
+    for item in merged:
+        line = str(item["line"])
+        m = re.match(r"^([ \t]*)([☐☑])\s*(.*)$", line)
         if m:
             indent, box, body = m.groups()
             body = body.replace("✓", "").replace("☐", "").strip("：: \t")
-            mark = "x" if box == "☑" else " "
+            mark = "x" if item.get("checked") or box == "☑" else " "
             norm.append(f"{indent}- [{mark}] {body}")
         else:
-            norm.append(l)
+            norm.append(line)
     return "\n".join(norm)
 
 # -------- 表格抽取（pdfplumber）与线性化 --------
+def dedupe_doubled_chars(s: str) -> str:
+    if not s:
+        return s
+    pairs = sum(1 for i in range(1, len(s)) if s[i] == s[i - 1])
+    if pairs >= 0.4 * len(s):
+        return "".join(s[i] for i in range(len(s)) if i % 2 == 0)
+    return s
+
+def dedupe_full_runs(s: str) -> str:
+    return re.sub(r"([\u4e00-\u9fff])\1+", r"\1", s)
+
+HEADER_TERMS = [
+    "编号", "序号", "序", "号",
+    "模块", "模块名称", "模块名", "项目", "子项目",
+    "内容", "说明", "描述", "服务范围", "服务要求", "服务标准",
+    "数量", "单位", "单价", "合价", "金额",
+]
+
+def _is_probable_table(rows: List[List[str]]) -> bool:
+    if len(rows) < 2:
+        return False
+    num_cols = max((len(r) for r in rows if r), default=0)
+    if num_cols < 2:
+        return False
+    header = rows[0]
+    header_cells = [c or "" for c in header]
+    hits = 0
+    for term in HEADER_TERMS:
+        if any(term in cell for cell in header_cells):
+            hits += 1
+    if hits < 2:
+        return False
+    total_cells = sum(len(r) for r in rows if r)
+    if total_cells == 0:
+        return False
+    total_len = sum(len(c or "") for r in rows for c in r)
+    avg_len = total_len / total_cells
+    if avg_len >= 120:
+        return False
+    return True
+
 def _extract_tables_on_page(pdf_path: Path, page_index: int) -> List[List[List[str]]]:
     """返回同一页的多张表，每张表是 rows(list[list[str]])。"""
     import pdfplumber  # 文本型 PDF 表格：lines / text 两策略
@@ -72,10 +191,16 @@ def _extract_tables_on_page(pdf_path: Path, page_index: int) -> List[List[List[s
             # 规范化单元格：去多余空白，合并断行
             rows = []
             for row in t:
-                if row is None: 
+                if row is None:
                     continue
-                rows.append([re.sub(r"\s+", " ", (c or "").strip()) for c in row])
-            if rows:
+                normalized_row = []
+                for c in row:
+                    cell = re.sub(r"\s+", " ", (c or "").strip())
+                    cell = dedupe_doubled_chars(cell)
+                    cell = dedupe_full_runs(cell)
+                    normalized_row.append(cell)
+                rows.append(normalized_row)
+            if rows and _is_probable_table(rows):
                 tables_all.append(rows)
     return tables_all
 
@@ -104,12 +229,17 @@ def linearize_table(rows: List[List[str]], known_order: Optional[List[str]] = No
         header = [f"列{j+1}" for j in range(len(rows[0]))]
         data = rows
     # 列名标准化
-    header_norm = [re.sub(r"\s+", "", h) for h in header]
-    # 同义映射
+    header_norm = [re.sub(r"\s+", "", h or "") for h in header]
     alias = {
-        "编号": ["编号", "序号", "編號"],
-        "模块名称": ["模块名称", "模块名", "模块", "名称", "模塊名稱"],
-        "内容说明": ["内容说明", "说明", "描述", "內容說明"],
+        "编号": ["编号", "序号", "編號", "序", "序號", "序列", "号"],
+        "模块名称": [
+            "模块名称", "模块名", "模块", "名称", "模塊名稱", "项目名称", "项目", "子项目", "模组",
+            "品目", "品目编码", "服务范围", "服务要求", "服务标准"
+        ],
+        "内容说明": [
+            "内容说明", "说明", "描述", "內容說明", "内容", "详情", "详细", "服务范围",
+            "服务要求", "服务标准", "标准", "要求"
+        ],
     }
     def find_col(name: str) -> Optional[int]:
         cands = alias.get(name, []) + [name]
@@ -122,31 +252,74 @@ def linearize_table(rows: List[List[str]], known_order: Optional[List[str]] = No
     idx_mod  = find_col("模块名称")
     idx_desc = find_col("内容说明")
 
-    # 2) 行改写
+    num_cols = len(header)
+    desc_index = idx_desc if idx_desc is not None else (num_cols - 1 if num_cols else None)
+
+    def row_values(row: List[str]) -> List[str]:
+        return [(row[j] if j < len(row) else "").strip() for j in range(num_cols)]
+
+    merged_rows: List[Dict[str, object]] = []
+    for row in data:
+        values = row_values(row)
+        no_val = values[idx_no] if idx_no is not None and idx_no < len(values) else ""
+        mod_val = values[idx_mod] if idx_mod is not None and idx_mod < len(values) else ""
+        desc_val = values[desc_index] if desc_index is not None and desc_index < len(values) else ""
+        should_merge = False
+        if desc_index is not None and desc_val:
+            if (not no_val and not mod_val) and merged_rows:
+                others = [values[j] for j in range(num_cols) if j != desc_index and values[j]]
+                if not others:
+                    should_merge = True
+        if should_merge:
+            last = merged_rows[-1]
+            last_desc: List[str] = last.setdefault("desc", [])  # type: ignore
+            last_desc.append(desc_val)
+            if desc_index is not None:
+                joined = "；".join(last_desc)
+                last_values: List[str] = last["values"]  # type: ignore
+                last_values[desc_index] = joined
+            continue
+        entry: Dict[str, object] = {
+            "values": values,
+            "desc": [desc_val] if (desc_index is not None and desc_val) else [],
+            "no": no_val,
+            "mod": mod_val,
+        }
+        merged_rows.append(entry)
+
     out_lines: List[str] = []
-    for ridx, row in enumerate(data, start=1):
-        def safe(i): 
-            return (row[i] if i is not None and i < len(row) else "").strip()
-        no = safe(idx_no) or str(ridx)
-        out_lines.append(f"编号{no}：")
-        # 优先输出三大列；其余补充
-        if idx_mod is not None:
-            val = safe(idx_mod)
-            if val:
-                out_lines.append(f"模块名称: {val}")
-        if idx_desc is not None:
-            val = safe(idx_desc)
-            if val:
-                out_lines.append(f"内容说明: {val}")
-        # 其他列
-        used = set([c for c in [idx_no, idx_mod, idx_desc] if c is not None])
-        for j, h in enumerate(header):
-            if j in used: 
-                continue
-            val = safe(j)
-            if val:
-                out_lines.append(f"{h}: {val}")
-        out_lines.append("")  # 空行分隔
+    if idx_desc is not None:
+        for ridx, entry in enumerate(merged_rows, start=1):
+            values = entry["values"]  # type: ignore
+            number = str(entry.get("no")) if entry.get("no") else str(ridx)
+            out_lines.append(f"编号{number}：")
+            if idx_mod is not None:
+                mod_val = values[idx_mod]
+                if mod_val:
+                    out_lines.append(f"模块名称: {mod_val}")
+            desc_items: List[str] = entry.get("desc", [])  # type: ignore
+            desc_val = "；".join(desc_items) if desc_items else (values[idx_desc] if values[idx_desc] else "")
+            if desc_val:
+                out_lines.append(f"内容说明: {desc_val}")
+            used = {c for c in [idx_no, idx_mod, idx_desc] if c is not None}
+            for j, h in enumerate(header):
+                if j in used:
+                    continue
+                val = values[j]
+                if val:
+                    label = h or f"列{j+1}"
+                    out_lines.append(f"{label}: {val}")
+            out_lines.append("")
+    else:
+        for ridx, entry in enumerate(merged_rows, start=1):
+            values = entry["values"]  # type: ignore
+            out_lines.append(f"第{ridx}行：")
+            for j, h in enumerate(header):
+                val = values[j]
+                if val:
+                    label = h or f"列{j+1}"
+                    out_lines.append(f"{label}: {val}")
+            out_lines.append("")
     return "\n".join(out_lines).rstrip()
 
 # -------- 整体流程：逐页正文 + 表格线性化 并入同一 TXT --------
@@ -158,7 +331,7 @@ def pdf_to_unified_txt(pdf_path: Path, out_txt: Path, sort_text: bool = True) ->
         page = doc.load_page(pno)
         text = page.get_text("text", sort=sort_text)
         text = clean_text(text)
-        text = repair_checkboxes(text)
+        text = repair_checkboxes(text, page)
 
         # 同页表格
         tables = _extract_tables_on_page(pdf_path, pno)
