@@ -277,53 +277,106 @@ def _extract_tables_on_page(pdf_path: Path, page_index: int) -> List[List[List[s
                 tables_all.append(rows)
     return tables_all
 
-def _col_stats(col_vals: List[str]):
-    lens = [len(v) for v in col_vals if v]
-    avg_len = statistics.mean(lens) if lens else 0.0
-    zh_ratio = (
-        statistics.mean([
-            sum(1 for ch in v if "\u4e00" <= ch <= "\u9fff") / max(1, len(v))
-            for v in col_vals if v
-        ])
-        if col_vals
-        else 0.0
-    )
-    num_like = [bool(re.fullmatch(r"[0-9一二三四五六七八九十]+", (v or "").strip())) for v in col_vals]
-    num_ratio = sum(num_like) / max(1, len(col_vals))
-    pure_num_ratio = sum(bool(re.fullmatch(r"\d+", (v or "").strip())) for v in col_vals) / max(1, len(col_vals))
-    return dict(avg_len=avg_len, zh_ratio=zh_ratio, num_ratio=num_ratio, pure_num_ratio=pure_num_ratio)
+def _dedupe_doubled_chars(s: str) -> str:
+    if not s:
+        return s
+    pairs = sum(1 for i in range(1, len(s)) if s[i] == s[i - 1])
+    if pairs >= 0.4 * len(s):  # 经验阈值
+        return "".join(s[i] for i in range(len(s)) if i % 2 == 0)
+    return s
 
 
-def _is_id_column(vals: List[str]) -> bool:
-    stripped = []
+def _norm_cell(x: str) -> str:
+    x = (x or "").strip()
+    x = re.sub(r"\s+", " ", x)
+    return _dedupe_doubled_chars(x)
+
+
+def _detect_header_depth(rows: List[List[str]], max_rows: int = 3) -> int:
+    if not rows:
+        return 0
+    depth = 1
+    for r in range(min(max_rows, len(rows))):
+        cells = [_norm_cell(c) for c in rows[r]]
+        txt = " ".join(cells)
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", txt))
+        digit_ratio = len(re.findall(r"\d", txt)) / max(1, len(txt))
+        avg_len = (
+            statistics.mean([len(c) for c in cells if c]) if any(cells) else 0
+        )
+        is_headerish = has_cjk and digit_ratio < 0.35 and avg_len <= 18
+        if is_headerish:
+            depth = r + 1
+        else:
+            break
+    return max(1, depth)
+
+
+def _merge_header_labels(rows: List[List[str]], depth: int) -> List[str]:
+    cols = len(rows[0])
+    labels = []
+    for j in range(cols):
+        parts = []
+        carry = ""
+        for r in range(depth):
+            cell = _norm_cell(rows[r][j]) if j < len(rows[r]) else ""
+            if not cell:
+                cell = carry
+            else:
+                carry = cell
+            if cell and (not parts or cell != parts[-1]):
+                parts.append(cell)
+        label = " / ".join(parts) if parts else f"列{j+1}"
+        labels.append(label)
+    return labels
+
+
+_CN_NUM = "零一二三四五六七八九十百千万亿〇壹贰叁肆伍陆柒捌玖拾佰仟"
+
+
+def _is_sequential_numbers(vals: List[str]) -> bool:
+    seq = []
     for v in vals:
         v = (v or "").strip()
-        if v == "":
+        if not v:
             continue
-        m = re.fullmatch(r"\d+", v)
-        if m:
-            stripped.append(int(v))
+        if re.fullmatch(r"\d+", v):
+            seq.append(int(v))
+        elif all(ch in _CN_NUM for ch in v):
+            seq.append(len(seq) + 1)
         else:
             return False
-    if len(stripped) < max(2, math.ceil(0.5 * len(vals))):
+    if len(seq) < max(2, math.ceil(0.5 * len(vals))):
         return False
-    inc = all(stripped[i] <= stripped[i + 1] for i in range(len(stripped) - 1))
-    return inc
+    return all(seq[i] <= seq[i + 1] for i in range(len(seq) - 1))
 
 
-def _merge_cont_rows(rows, idx_no, idx_name, idx_desc):
-    merged = []
-    for row in rows:
-        def get(i):
-            return (row[i].strip() if i is not None and i < len(row) and row[i] else "")
+def _pick_id_col(headers: List[str], data: List[List[str]]) -> Optional[int]:
+    for j, h in enumerate(headers):
+        h0 = h.replace(" ", "").lower()
+        if any(k in h0 for k in ["编号", "序号", "no", "序"]):
+            return j
+    cols = list(zip(*data)) if data else [[] for _ in headers]
+    cands = [
+        j for j, col in enumerate(cols) if _is_sequential_numbers([_norm_cell(x) for x in col])
+    ]
+    return cands[0] if cands else None
 
-        no = get(idx_no)
-        name = get(idx_name)
-        desc = get(idx_desc)
-        if (not no and not name) and desc and merged:
-            merged[-1]["desc"].append(desc)
-        else:
-            merged.append({"no": no, "name": name, "desc": [desc] if desc else [], "raw": row})
+
+def _merge_continuations(data: List[List[str]], id_col: Optional[int]) -> List[List[str]]:
+    merged: List[List[str]] = []
+    for row in data:
+        row = [_norm_cell(x) for x in row]
+        if id_col is not None:
+            id_empty = (id_col >= len(row)) or (row[id_col] == "")
+            nonempty_cols = [i for i, v in enumerate(row) if v]
+            if id_empty and nonempty_cols and len(nonempty_cols) <= 2 and merged:
+                prev = merged[-1]
+                for i in nonempty_cols:
+                    if i < len(prev):
+                        prev[i] = (prev[i] + "；" + row[i]) if prev[i] else row[i]
+                continue
+        merged.append(row)
     return merged
 
 
@@ -331,56 +384,29 @@ def linearize_table(rows: List[List[str]], known_order: Optional[List[str]] = No
     if not rows:
         return ""
 
-    rows = [[re.sub(r"\s+", " ", dedupe_doubled_chars((c or "").strip())) for c in row] for row in rows]
+    depth = _detect_header_depth(rows, max_rows=3)
+    headers = _merge_header_labels(rows, depth)
+    data = [[_norm_cell(c) for c in r] for r in rows[depth:]]
 
-    header = rows[0]
-    data = rows[1:]
+    id_col = _pick_id_col(headers, data)
+    data = _merge_continuations(data, id_col)
 
-    def looks_like_header(cells):
-        if not cells:
-            return False
-        txt = " ".join(cells)
-        has_zh = re.search(r"[\u4e00-\u9fff]", txt) is not None
-        many_digits = len(re.findall(r"\d", txt)) > max(4, len(txt) * 0.3)
-        return has_zh and not many_digits and (max(len(c) for c in cells) if cells else 0) <= 20
+    lines: List[str] = []
+    for ridx, row in enumerate(data, start=1):
+        if id_col is not None and id_col < len(row) and row[id_col]:
+            lines.append(f"{headers[id_col]}{row[id_col]}：")
+        else:
+            lines.append(f"第{ridx}行：")
 
-    if not looks_like_header(header):
-        header = [f"列{j+1}" for j in range(len(rows[0]))]
-        data = rows
+        for j, h in enumerate(headers):
+            if j == id_col:
+                continue
+            val = row[j] if j < len(row) else ""
+            if val:
+                lines.append(f"{h}: {val}")
+        lines.append("")
 
-    cols = list(zip(*data)) if data else [[] for _ in header]
-    stats = [_col_stats(list(c)) for c in cols] if cols else []
-
-    idx_id_candidates = [j for j, c in enumerate(cols) if _is_id_column(list(c))]
-    idx_no = idx_id_candidates[0] if idx_id_candidates else None
-
-    idx_desc = max(range(len(header)), key=lambda j: stats[j]["avg_len"]) if header else None
-
-    candidates = [j for j in range(len(header)) if j != idx_desc]
-    idx_name = max(candidates, key=lambda j: (stats[j]["zh_ratio"], -abs(stats[j]["avg_len"] - 12))) if candidates else None
-
-    merged = _merge_cont_rows(data, idx_no, idx_name, idx_desc)
-
-    out = []
-    for ridx, item in enumerate(merged, start=1):
-        no = item["no"] or str(ridx)
-        out.append(f"编号{no}：")
-        if idx_name is not None:
-            name = item["name"]
-            if name:
-                out.append(f"模块名称: {name}")
-        if idx_desc is not None:
-            desc = "；".join([d for d in item["desc"] if d])
-            if desc:
-                out.append(f"内容说明: {desc}")
-        if (idx_name is None and idx_desc is None) or (not item["name"] and not item["desc"]):
-            row = item["raw"]
-            for j, h in enumerate(header):
-                cell = row[j] if j < len(row) else ""
-                if cell.strip():
-                    out.append(f"{h}: {cell.strip()}")
-        out.append("")
-    return "\n".join(out).rstrip()
+    return "\n".join(lines).rstrip()
 
 # -------- 整体流程：逐页正文 + 表格线性化 并入同一 TXT --------
 def pdf_to_unified_txt(pdf_path: Path, out_txt: Path, sort_text: bool = True) -> None:
