@@ -24,6 +24,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from tqdm import tqdm
+
 # ---- Optional vector dependencies -------------------------------------------------
 try:
     import numpy as np
@@ -414,7 +416,8 @@ def main() -> None:
     # ---- Pass 1: Step 1 关键词分类 + 收集文本 --------------------------------
     docs: List[dict] = []
 
-    for file_path in iter_files(input_dir):
+    file_paths = list(iter_files(input_dir))
+    for file_path in tqdm(file_paths, desc="Classifying contracts"):
         relative = file_path.relative_to(input_dir)
         logging.debug("Processing %s", relative)
 
