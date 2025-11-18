@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 import requests
 from docx import Document
 from pypdf import PdfReader
+from tqdm import tqdm
 
 
 LEGAL_MAP = {
@@ -444,7 +445,7 @@ def main():
     with docs_path.open("w", encoding="utf-8") as docs_writer, chunks_path.open(
         "w", encoding="utf-8"
     ) as chunks_writer:
-        for file_path in all_files:
+        for file_path in tqdm(all_files, desc="Processing files"):
             process_file(file_path, args, client, stats, docs_writer, chunks_writer)
 
     print("处理完成：")
