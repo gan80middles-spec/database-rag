@@ -548,7 +548,7 @@ def extract_light_meta(text: str, file_path: str = ""):
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_BETA_BASE_URL = os.getenv("DEEPSEEK_BETA_BASE_URL", "https://api.deepseek.com/beta")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-083aa5b6508a4d719786e6142c44cd32")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "sk-**")
 
 CRIMINAL_DOC_INFO_TEMPLATE = {
     "meta": {
