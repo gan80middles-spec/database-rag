@@ -523,6 +523,11 @@ def llm_split_text(
             debug_path = f"debug_anchors_{sanitize_filename(title)}_seg{idx}.json"
             with open(debug_path, "w", encoding="utf-8") as f:
                 json.dump(raw_clauses, f, ensure_ascii=False, indent=2)
+            abs_path = os.path.abspath(debug_path)
+            print(
+                f"[DEBUG][{title}][seg={idx}] 原始锚点已保存到 {abs_path}，"
+                "可直接打开查看 DeepSeek 输出"
+            )
 
         if not seg_clauses and raw_clauses:
             print(f"[LLM ANCHOR FAIL][{title}][seg={idx}] 无法匹配锚点")
