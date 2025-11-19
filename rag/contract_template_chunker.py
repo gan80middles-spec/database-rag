@@ -6,7 +6,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from docx import Document
@@ -75,6 +75,73 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+def _compact(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+
+def _ensure_compact_cache(full_text: str, cache: Dict[str, Any]) -> None:
+    if cache.get("compact_text") is not None:
+        return
+
+    non_ws_indices: List[int] = []
+    compact_chars: List[str] = []
+    prefix_counts = [0] * (len(full_text) + 1)
+    count = 0
+    for idx, ch in enumerate(full_text):
+        prefix_counts[idx] = count
+        if ch.isspace():
+            continue
+        non_ws_indices.append(idx)
+        compact_chars.append(ch)
+        count += 1
+    prefix_counts[len(full_text)] = count
+    cache["compact_text"] = "".join(compact_chars)
+    cache["non_ws_indices"] = non_ws_indices
+    cache["prefix_counts"] = prefix_counts
+
+
+def _find_anchor_loose(
+    full_text: str,
+    anchor: str,
+    start_hint: int = 0,
+    cache: Optional[Dict[str, Any]] = None,
+) -> Tuple[int, int]:
+    if not anchor:
+        return -1, -1
+
+    cache = cache if cache is not None else {}
+
+    exact = full_text.find(anchor, start_hint)
+    if exact != -1:
+        return exact, exact + len(anchor)
+
+    exact = full_text.find(anchor)
+    if exact != -1:
+        return exact, exact + len(anchor)
+
+    compact_anchor = _compact(anchor)
+    if not compact_anchor:
+        return -1, -1
+
+    _ensure_compact_cache(full_text, cache)
+    compact_full = cache.get("compact_text", "")
+    non_ws_indices: List[int] = cache.get("non_ws_indices", [])
+    prefix_counts: List[int] = cache.get("prefix_counts", [])
+
+    bounded_hint = max(0, min(start_hint, len(prefix_counts) - 1)) if prefix_counts else 0
+    hint_compact_idx = prefix_counts[bounded_hint] if prefix_counts else 0
+    pos = compact_full.find(compact_anchor, hint_compact_idx)
+    if pos == -1:
+        return -1, -1
+
+    start_idx = non_ws_indices[pos]
+    last_pos = pos + len(compact_anchor) - 1
+    if last_pos >= len(non_ws_indices):
+        return start_idx, start_idx + len(anchor)
+    end_idx = non_ws_indices[last_pos] + 1
+    return start_idx, end_idx
+
+
 def materialize_clauses_from_anchors(full_text: str, raw_clauses: List[Dict]) -> List[Dict]:
     """根据锚点把条款正文从原文中切片出来。"""
 
@@ -84,6 +151,7 @@ def materialize_clauses_from_anchors(full_text: str, raw_clauses: List[Dict]) ->
     result: List[Dict[str, str]] = []
     cursor = 0
     text_len = len(full_text)
+    compact_cache: Dict[str, Any] = {}
 
     for clause in raw_clauses:
         start_anchor = (clause.get("start_anchor") or "").strip()
@@ -92,22 +160,24 @@ def materialize_clauses_from_anchors(full_text: str, raw_clauses: List[Dict]) ->
         if not start_anchor:
             continue
 
-        start = full_text.find(start_anchor, cursor)
-        if start == -1:
-            start = full_text.find(start_anchor)
+        start, start_match_end = _find_anchor_loose(
+            full_text, start_anchor, cursor, compact_cache
+        )
         if start == -1:
             continue
 
         if end_anchor:
-            end = full_text.find(end_anchor, start)
-            if end == -1:
-                end = start + len(start_anchor)
+            end_start, end_match_end = _find_anchor_loose(
+                full_text, end_anchor, start, compact_cache
+            )
+            if end_start == -1:
+                end = start_match_end
             else:
-                end += len(end_anchor)
+                end = end_match_end
         else:
-            end = start + len(start_anchor)
+            end = start_match_end
 
-        end = min(max(end, start + len(start_anchor)), text_len)
+        end = min(max(end, start_match_end), text_len)
         text = full_text[start:end].strip()
         if not text:
             continue
@@ -448,6 +518,16 @@ def llm_split_text(
             f"[DEBUG][{title}][seg={idx}] "
             f"raw_clauses={len(raw_clauses)}, matched={len(seg_clauses)}"
         )
+
+        if len(raw_clauses) >= 5 and len(seg_clauses) < len(raw_clauses) * 0.5:
+            debug_path = f"debug_anchors_{sanitize_filename(title)}_seg{idx}.json"
+            with open(debug_path, "w", encoding="utf-8") as f:
+                json.dump(raw_clauses, f, ensure_ascii=False, indent=2)
+            abs_path = os.path.abspath(debug_path)
+            print(
+                f"[DEBUG][{title}][seg={idx}] 原始锚点已保存到 {abs_path}，"
+                "可直接打开查看 DeepSeek 输出"
+            )
 
         if not seg_clauses and raw_clauses:
             print(f"[LLM ANCHOR FAIL][{title}][seg={idx}] 无法匹配锚点")
