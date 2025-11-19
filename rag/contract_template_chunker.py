@@ -6,7 +6,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from docx import Document
@@ -122,6 +122,78 @@ def materialize_clauses_from_anchors(full_text: str, raw_clauses: List[Dict]) ->
         cursor = end
 
     return result
+
+
+def fill_gaps(
+    full_text: str,
+    clauses: List[Dict[str, str]],
+    min_gap_chars: int = 50,
+) -> List[Dict[str, str]]:
+    """检测条款之间的缺口，并把缺失正文补成匿名条款。"""
+
+    if not full_text or not clauses:
+        return clauses or []
+
+    matched: List[Tuple[int, int, Dict[str, str]]] = []
+    matched_ids = set()
+    cursor = 0
+    text_len = len(full_text)
+
+    for clause in clauses:
+        text_value = (clause.get("text") or "").strip()
+        if not text_value:
+            continue
+        start = full_text.find(text_value, cursor)
+        if start == -1:
+            start = full_text.find(text_value)
+        if start == -1:
+            continue
+        end = start + len(text_value)
+        matched.append((start, end, clause))
+        matched_ids.add(id(clause))
+        cursor = end
+
+    if not matched:
+        return clauses
+
+    matched.sort(key=lambda item: item[0])
+    augmented: List[Tuple[int, int, Dict[str, str]]] = []
+    prev_end = 0
+
+    for start, end, clause in matched:
+        gap = start - prev_end
+        if gap >= min_gap_chars:
+            gap_text = full_text[prev_end:start].strip()
+            if gap_text:
+                augmented.append(
+                    (
+                        prev_end,
+                        start,
+                        {"clause_no": "", "section": "", "text": gap_text},
+                    )
+                )
+        augmented.append((start, end, clause))
+        prev_end = end
+
+    tail_gap = text_len - prev_end
+    if tail_gap >= min_gap_chars:
+        gap_text = full_text[prev_end:].strip()
+        if gap_text:
+            augmented.append(
+                (
+                    prev_end,
+                    text_len,
+                    {"clause_no": "", "section": "", "text": gap_text},
+                )
+            )
+
+    ordered = [item[2] for item in augmented]
+
+    for clause in clauses:
+        if id(clause) not in matched_ids:
+            ordered.append(clause)
+
+    return ordered
 
 
 def sliding_windows(text: str, window: int, overlap: int) -> List[str]:
@@ -436,6 +508,8 @@ def process_file(
 
     if attempted_llm:
         clauses = llm_split_text(title, cleaned, client, args.max_chars, args.window, args.overlap)
+        if clauses:
+            clauses = fill_gaps(cleaned, clauses, min_gap_chars=50)
 
     if not clauses:
         raise RuntimeError(f"LLM 切分失败：{path}")
