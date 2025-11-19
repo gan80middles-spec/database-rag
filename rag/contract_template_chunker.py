@@ -168,82 +168,6 @@ def extract_json(content: str) -> Optional[Dict]:
             return None
 
 
-CLAUSE_HEADING_RE = re.compile(
-    r"^\s*(第[一二三四五六七八九十百千]+条)(?:[：:.．\s]*(.*))?$"
-)
-ALT_HEADING_RE = re.compile(r"^\s*([一二三四五六七八九十百千]+)[、\.．]\s*(.*)$")
-
-
-def fallback_clauses(text: str) -> List[Dict[str, str]]:
-    if not text.strip():
-        return [{"clause_no": "", "section": "", "text": text.strip()}]
-    lines = text.splitlines()
-    clauses = []
-    current = {"clause_no": "", "section": "", "lines": []}
-
-    def flush():
-        if current["lines"]:
-            clause_text = "\n".join(current["lines"]).strip()
-            if clause_text:
-                clauses.append(
-                    {
-                        "clause_no": current["clause_no"],
-                        "section": current["section"],
-                        "text": clause_text,
-                    }
-                )
-        current["lines"] = []
-
-    for line in lines:
-        if not line.strip():
-            if current["lines"]:
-                current["lines"].append("")
-            continue
-        m = CLAUSE_HEADING_RE.match(line)
-        if m:
-            flush()
-            current["clause_no"] = m.group(1) or ""
-            section = (m.group(2) or "").strip()
-            current["section"] = section
-            remainder = line[m.end():].strip()
-            current["lines"] = [remainder] if remainder else []
-            continue
-        m2 = ALT_HEADING_RE.match(line)
-        if m2:
-            flush()
-            current["clause_no"] = m2.group(1)
-            current["section"] = m2.group(2).strip()
-            current["lines"] = []
-            continue
-        current["lines"].append(line)
-    flush()
-
-    if clauses:
-        return clauses
-
-    # heading not found: use sliding chunks
-    return chunk_text_by_window(text)
-
-
-def chunk_text_by_window(text: str, min_chars: int = 400, max_chars: int = 900, overlap: int = 100) -> List[Dict[str, str]]:
-    text = text.strip()
-    if not text:
-        return [{"clause_no": "", "section": "", "text": ""}]
-    chunks = []
-    start = 0
-    length = len(text)
-    while start < length:
-        end = min(length, start + max_chars)
-        segment = text[start:end]
-        chunks.append({"clause_no": "", "section": "", "text": segment.strip()})
-        if end >= length:
-            break
-        start = end - overlap
-        if start < 0:
-            start = 0
-    return chunks or [{"clause_no": "", "section": "", "text": text}]
-
-
 def llm_split_text(
     title: str,
     text: str,
@@ -337,17 +261,13 @@ def process_file(
     length_chars = len(cleaned)
 
     clauses = None
-    used_fallback = False
     attempted_llm = bool(cleaned and client)
 
     if attempted_llm:
         clauses = llm_split_text(title, cleaned, client, args.max_chars, args.window, args.overlap)
 
     if not clauses:
-        clauses = fallback_clauses(cleaned)
-        used_fallback = True
-        if attempted_llm:
-            stats["fallback"] += 1
+        raise RuntimeError(f"LLM 切分失败：{path}")
 
     chunk_entries = []
     for clause in clauses:
@@ -406,10 +326,7 @@ def process_file(
     stats["files"] += 1
     stats.setdefault(business_type, 0)
     stats[business_type] += 1
-    if used_fallback:
-        print(f"[回退] {path}")
-    else:
-        print(f"[完成] {path}")
+    print(f"[完成] {path}")
 
     return doc_record, chunk_records
 
@@ -452,7 +369,7 @@ def main():
     )
 
     all_files = [p for p in input_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".txt", ".docx", ".pdf"}]
-    stats = {"files": 0, "fallback": 0}
+    stats = {"files": 0}
     for file_path in tqdm(all_files, desc="Processing files"):
         result = process_file(file_path, args, client, stats)
         if not result:
@@ -469,7 +386,6 @@ def main():
 
     print("处理完成：")
     print(f"  总文件数：{stats['files']}")
-    print(f"  回退次数：{stats['fallback']}")
     for btype in VALID_BUSINESS_TYPES:
         if btype in stats:
             print(f"  {btype}: {stats[btype]}")
