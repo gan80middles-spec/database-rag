@@ -467,21 +467,53 @@ def llm_split_text(
 ) -> Optional[List[Dict[str, str]]]:
     prompt_template = (
         "任务：将下列《{TITLE}》合同文本分割为“条款级”结构化 JSON。\n"
-        "要求：\n"
-        "1) 按“第……条/第一条/第二条”等条款标题切分；若标题不明确，按语义连续自然段合并成约400–900字片段；\n"
-        "2) 仅返回 JSON，键为：clauses: [{clause_no, section, start_anchor, end_anchor}]；\n"
-        "   - clause_no：如“第一条”，可为空；\n"
-        "   - section：条标题（如“违约责任”），可为空；\n"
-        "   - start_anchor：条款正文开头附近20～40个字符，直接从原文复制；\n"
-        "   - end_anchor：条款正文结尾附近20～40个字符，直接从原文复制；\n"
-        "3) 锚点必须直接从原文复制，不要改写、扩写或增加省略号；\n"
-        "4) 条款顺序必须与原文一致；不要任何解释、前后缀。\n"
-        "合同全文如下：\n{TEXT}\n"
-        "输出示例：\n"
+        "\n"
+        "严格要求（非常重要）：\n"
+        "1) 对每一条款，你必须先在【原文】中找到这一条的正文范围，然后：\n"
+        "   - start_anchor = 该条款正文【第一个字符开始的连续 30 个字符】；\n"
+        "   - end_anchor   = 该条款正文【最后的连续 30 个字符】；\n"
+        "2) start_anchor / end_anchor 必须满足：\n"
+        "   - 完全逐字从【原文】复制，不得擅自加入、省略或修改任何一个字、标点或空格；\n"
+        "   - 不得加入“...”等省略号；不得把不相邻的两段文本拼接在一起；\n"
+        "   - 不得跨越页码、章节标题等无关内容；\n"
+        "   - 每个锚点长度上限约 60 个字符（通常 30 个字符即可）；\n"
+        "   - 必须能在【原文】中用 Ctrl+F 精确搜索到完全一致的子串（忽略大小写）。\n"
+        "3) 如果某条款正文中间有换行，你也必须原样保留换行，不要合并成一行；\n"
+        "4) 绝对禁止的错误示例（不要这样做）：\n"
+        "   - 把“第一章 合作内容”与“第二章 合同金额”连成一个很长的 start_anchor；\n"
+        "   - 在锚点中加入“...”表示省略；\n"
+        "   - 把页码“1”或“2”与条款标题一起写进锚点。\n"
+        "5) 合法锚点示例：\n"
+        "   原文：\n"
+        "     第一章 服务项目\\n"
+        "     1.项目定义:根据甲乙双方友好协商,甲方委托乙方设计制作“四海易购”商城产品详情页面设计。\\n"
+        "   正确的 start_anchor 示例：\n"
+        "     \"1.项目定义:根据甲乙双方友好协商,甲方委托\"\n"
+        "   错误的 start_anchor 示例（禁止）：\n"
+        "     \"第一章服务项目 1.项目定义:根据甲乙双方友好协商,甲方委托乙方设计制作“四海易购”商城产品详情页面设计。第二章合同金额与付款方式\"（跨了下一章）。\n"
+        "\n"
+        "分割规则：\n"
+        "1) 优先按“第……条”“第一条”“第二条”等条款编号切分；\n"
+        "2) 有些合同使用“第一章/第二章”等章节标题，章节下可继续按条款编号细分；\n"
+        "3) 如果某些部分没有明显条款标题，则按语义连续自然段合并成约 400–900 字的片段，每个片段也视为一条记录；\n"
+        "4) 条款顺序必须与原文一致，不要跳过条款，不要合并本应独立的条款。\n"
+        "\n"
+        "输出格式要求：\n"
+        "1) 仅返回 JSON，顶层键为：clauses。\n"
+        "2) clauses 是一个数组，元素为：{clause_no, section, start_anchor, end_anchor}。\n"
+        "   - clause_no：条款编号，如“第一条”“第二十二条”，没有则填空字符串 \"\"；\n"
+        "   - section：条款标题，如“违约责任”“价款与支付”，没有标题则填空字符串 \"\"；\n"
+        "   - start_anchor：条款正文开头的锚点（见上面的严格要求）；\n"
+        "   - end_anchor：条款正文结尾的锚点（见上面的严格要求）。\n"
+        "\n"
+        "示例输出（仅为格式示例）：\n"
         "{\"clauses\": [\n"
         "  {\"clause_no\": \"第一条\", \"section\": \"车辆基本情况\", \"start_anchor\": \"本合同所指车辆为……\", \"end_anchor\": \"……并保证车辆不存在抵押、查封。\"},\n"
         "  {\"clause_no\": \"第二条\", \"section\": \"价款与支付\", \"start_anchor\": \"本合同项下车辆总价款为人民币\", \"end_anchor\": \"……乙方应于收到车辆之日起三日内付清。\"}\n"
-        "]}"
+        "]}\n"
+        "\n"
+        "合同全文如下：\n"
+        "{TEXT}\n"
     )
 
     segments = sliding_windows(text, window, overlap) if len(text) > max_chars else [text]
@@ -519,15 +551,15 @@ def llm_split_text(
             f"raw_clauses={len(raw_clauses)}, matched={len(seg_clauses)}"
         )
 
-        if len(raw_clauses) >= 5 and len(seg_clauses) < len(raw_clauses) * 0.5:
-            debug_path = f"debug_anchors_{sanitize_filename(title)}_seg{idx}.json"
-            with open(debug_path, "w", encoding="utf-8") as f:
-                json.dump(raw_clauses, f, ensure_ascii=False, indent=2)
-            abs_path = os.path.abspath(debug_path)
-            print(
-                f"[DEBUG][{title}][seg={idx}] 原始锚点已保存到 {abs_path}，"
-                "可直接打开查看 DeepSeek 输出"
-            )
+        
+        debug_path = f"debug_anchors_{sanitize_filename(title)}_seg{idx}.json"
+        with open(debug_path, "w", encoding="utf-8") as f:
+            json.dump(raw_clauses, f, ensure_ascii=False, indent=2)
+        abs_path = os.path.abspath(debug_path)
+        print(
+            f"[DEBUG][{title}][seg={idx}] 原始锚点已保存到 {abs_path}，"
+            "可直接打开查看 DeepSeek 输出"
+        )
 
         if not seg_clauses and raw_clauses:
             print(f"[LLM ANCHOR FAIL][{title}][seg={idx}] 无法匹配锚点")
