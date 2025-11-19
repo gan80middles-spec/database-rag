@@ -371,6 +371,12 @@ def llm_split_text(
 
         raw_clauses = parsed.get("clauses", []) or []
         seg_clauses = materialize_clauses_from_anchors(seg, raw_clauses)
+
+        print(
+            f"[DEBUG][{title}][seg={idx}] "
+            f"raw_clauses={len(raw_clauses)}, matched={len(seg_clauses)}"
+        )
+
         if not seg_clauses and raw_clauses:
             print(f"[LLM ANCHOR FAIL][{title}][seg={idx}] 无法匹配锚点")
         all_clauses.extend(seg_clauses)
