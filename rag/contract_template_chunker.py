@@ -117,6 +117,8 @@ class DeepseekClient:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.2,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"}
         }
         backoffs = [1, 3, 7]
         last_err = None
@@ -147,25 +149,121 @@ class DeepseekClient:
         raise RuntimeError(f"LLM request failed: {last_err}")
 
 
-JSON_RE = re.compile(r"\{.*\}", re.S)
+def _strip_code_fence(text: str) -> str:
+    """去掉 ```json ``` 之类的 Markdown 代码块外壳，只保留内部内容（支持同一行内有 JSON 的情况）。"""
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+
+    lines = text.splitlines()
+
+    # 处理第一行：可能是 "```" / "```json" / "```json { ... }"
+    if lines:
+        first = lines[0]
+        m = re.match(r"^```[a-zA-Z0-9_-]*\s*(.*)$", first)
+        if m:
+            # m.group(1) 是去掉 ```json 之后的内容
+            rest = m.group(1).strip()
+            if rest:
+                # 保留这一行的 JSON 内容
+                lines[0] = rest
+            else:
+                # 这一行只有 ``` 或 ```json，整行丢弃
+                lines = lines[1:]
+
+    # 处理最后一行：可能是 "..." 或 "... ```"
+    if lines:
+        last = lines[-1]
+        if "```" in last:
+            idx = last.find("```")
+            before = last[:idx].rstrip()
+            if before:
+                lines[-1] = before
+            else:
+                # 行里只有 ```，整体删掉
+                lines = lines[:-1]
+
+    return "\n".join(lines).strip()
+
+
+
+def _iter_json_blocks(text: str):
+    """
+    从一段文本里，按括号配对依次抽出形如 {...} 或 [...] 的候选 JSON 片段。
+    避免 {.*} 贪婪匹配导致的 {...}{...} 问题。
+    """
+    n = len(text)
+    i = 0
+    while i < n:
+        # 找到下一个起始括号
+        while i < n and text[i] not in "{[":
+            i += 1
+        if i >= n:
+            break
+
+        start = i
+        stack = [text[i]]
+        i += 1
+
+        while i < n and stack:
+            ch = text[i]
+            if ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if not stack:
+                    break
+                stack.pop()
+            i += 1
+
+        # stack 为空说明找到了一段完整的 JSON 块
+        if not stack:
+            block = text[start:i].strip()
+            if block:
+                yield block
+        else:
+            # 括号没闭合，直接结束
+            break
 
 
 def extract_json(content: str) -> Optional[Dict]:
+    """
+    尽量鲁棒地从 LLM 返回内容中抽出一个 JSON：
+    1. 去掉 ```json 代码块外壳；
+    2. 先整体尝试 json.loads；
+    3. 再按括号配对迭代每一段 {...} / [...]；
+    4. 根为 list 时包一层 {"clauses": [...]}。
+    """
     if not content:
         return None
-    match = JSON_RE.search(content)
-    if not match:
-        return None
-    candidate = match.group(0).strip()
-    candidate = candidate.strip("\ufeff\n ")
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        fixed = candidate.rstrip(", ")
+
+    text = _strip_code_fence(content)
+
+    # 1) 直接整体尝试
+    for cand in (text, text.rstrip(", ")):
+        if not cand:
+            continue
         try:
-            return json.loads(fixed)
+            data = json.loads(cand)
+            if isinstance(data, dict):
+                return data
+            if isinstance(data, list):
+                return {"clauses": data}
         except json.JSONDecodeError:
-            return None
+            pass
+
+    # 2) 按括号配对依次尝试各个 JSON 块
+    for block in _iter_json_blocks(text):
+        for cand in (block, block.rstrip(", ")):
+            try:
+                data = json.loads(cand)
+                if isinstance(data, dict):
+                    return data
+                if isinstance(data, list):
+                    return {"clauses": data}
+            except json.JSONDecodeError:
+                continue
+
+    return None
 
 
 def llm_split_text(
@@ -190,31 +288,53 @@ def llm_split_text(
         "{\"clauses\":[\n  {\"clause_no\":\"第一条\",\"section\":\"车辆基本情况\",\"text\":\"……\"},\n"
         "  {\"clause_no\":\"第二条\",\"section\":\"价款与支付\",\"text\":\"……\"}\n]}"
     )
+
     segments = sliding_windows(text, window, overlap) if len(text) > max_chars else [text]
     all_clauses: List[Dict[str, str]] = []
-    for seg in segments:
+
+    for idx, seg in enumerate(segments):
         prompt = prompt_template.replace("{TITLE}", title).replace("{TEXT}", seg)
         try:
             content = client.chat(prompt)
-            parsed = extract_json(content)
-            if not parsed or "clauses" not in parsed:
-                return None
-            seg_clauses = []
-            for clause in parsed.get("clauses", []):
-                text_value = (clause.get("text") or "").strip()
-                if not text_value:
-                    continue
-                seg_clauses.append(
-                    {
-                        "clause_no": clause.get("clause_no", ""),
-                        "section": clause.get("section", ""),
-                        "text": text_value,
-                    }
-                )
-            all_clauses.extend(seg_clauses)
-        except Exception:
+        except Exception as e:
+            # 1) 直接打印出是哪一段 HTTP / 网络错误
+            print(f"[LLM ERROR][{title}][seg={idx}] {e}")
             return None
-    return all_clauses or None
+
+        parsed = extract_json(content)
+        if not parsed or "clauses" not in parsed:
+            # 2) 把模型原始输出截断打印 & 落到文件里
+            preview = (content or "").strip().replace("\n", " ")
+            if len(preview) > 300:
+                preview = preview[:300] + "..."
+
+            print(f"[LLM JSON FAIL][{title}][seg={idx}] preview={preview}")
+
+            with open("deepseek_bad_responses.log", "a", encoding="utf-8") as f:
+                f.write(f"\n===== {title} seg={idx} =====\n")
+                f.write(content or "")
+                f.write("\n")
+            return None
+
+        seg_clauses: List[Dict[str, str]] = []
+        for clause in parsed.get("clauses", []):
+            text_value = (clause.get("text") or "").strip()
+            if not text_value:
+                continue
+            seg_clauses.append(
+                {
+                    "clause_no": clause.get("clause_no", ""),
+                    "section": clause.get("section", ""),
+                    "text": text_value,
+                }
+            )
+        all_clauses.extend(seg_clauses)
+
+    if not all_clauses:
+        print(f"[LLM EMPTY CLAUSES][{title}]")
+        return None
+
+    return all_clauses
 
 
 def estimate_tokens(text: str) -> int:
