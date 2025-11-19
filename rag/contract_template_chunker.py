@@ -484,6 +484,47 @@ def sanitize_filename(name: str) -> str:
     return safe or "document"
 
 
+def llm_generate_tags(title: str, text: str, client: Optional[DeepseekClient], max_chars: int = 2000) -> List[str]:
+    if not text or not client:
+        return []
+
+    snippet = text.strip()[:max_chars]
+    if not snippet:
+        return []
+
+    prompt = (
+        "任务：根据下列合同标题和正文摘要，生成 2-4 个简短中文标签，总结合同类型、标的或场景。\n"
+        "要求：\n"
+        "1) 标签不超过 8 个汉字；\n"
+        "2) 避免编号、标点或重复含义；\n"
+        "3) 仅返回 JSON，格式为 {\"tags\": [\"标签1\", \"标签2\"]}；\n"
+        "4) 不要附加解释。\n"
+        f"合同标题：《{title}》\n"
+        f"正文摘要：\n{snippet}\n"
+    )
+
+    try:
+        content = client.chat(prompt)
+    except Exception as exc:
+        print(f"[LLM TAGS ERROR][{title}] {exc}")
+        return []
+
+    parsed = extract_json(content)
+    tags = parsed.get("tags") if isinstance(parsed, dict) else None  # type: ignore[arg-type]
+    if not isinstance(tags, list):
+        print(f"[LLM TAGS FAIL][{title}] content={(content or '').strip()[:200]}")
+        return []
+
+    cleaned_tags: List[str] = []
+    for tag in tags:
+        if isinstance(tag, str):
+            tag = tag.strip()
+            if tag:
+                cleaned_tags.append(tag)
+
+    return cleaned_tags[:4]
+
+
 def process_file(
     path: Path,
     args,
@@ -539,17 +580,17 @@ def process_file(
         chunk_entries = [{"clause_no": "", "section": "", "text": cleaned}]
 
     doc_id = compute_doc_id(path, business_type)
+    tags = llm_generate_tags(title, cleaned, client)
+
     doc_record = {
         "doc_id": doc_id,
         "doc_type": "contract_template",
         "business_type": business_type,
         "legal_type": legal_type,
         "title": title,
-        "language": "zh",
-        "jurisdiction": "CN",
         "chunk_count": len(chunk_entries),
         "length_chars": length_chars,
-        "tags": [],
+        "tags": tags,
     }
     chunk_records = []
     for idx, clause in enumerate(chunk_entries, start=1):
