@@ -6,7 +6,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import requests
 from docx import Document
@@ -75,211 +75,7 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def _compact(s: str) -> str:
-    return re.sub(r"\s+", "", s or "")
-
-
-def _ensure_compact_cache(full_text: str, cache: Dict[str, Any]) -> None:
-    if cache.get("compact_text") is not None:
-        return
-
-    non_ws_indices: List[int] = []
-    compact_chars: List[str] = []
-    prefix_counts = [0] * (len(full_text) + 1)
-    count = 0
-    for idx, ch in enumerate(full_text):
-        prefix_counts[idx] = count
-        if ch.isspace():
-            continue
-        non_ws_indices.append(idx)
-        compact_chars.append(ch)
-        count += 1
-    prefix_counts[len(full_text)] = count
-    cache["compact_text"] = "".join(compact_chars)
-    cache["non_ws_indices"] = non_ws_indices
-    cache["prefix_counts"] = prefix_counts
-
-
-def _find_anchor_loose(
-    full_text: str,
-    anchor: str,
-    start_hint: int = 0,
-    cache: Optional[Dict[str, Any]] = None,
-) -> Tuple[int, int]:
-    if not anchor:
-        return -1, -1
-
-    cache = cache if cache is not None else {}
-
-    exact = full_text.find(anchor, start_hint)
-    if exact != -1:
-        return exact, exact + len(anchor)
-
-    exact = full_text.find(anchor)
-    if exact != -1:
-        return exact, exact + len(anchor)
-
-    compact_anchor = _compact(anchor)
-    if not compact_anchor:
-        return -1, -1
-
-    _ensure_compact_cache(full_text, cache)
-    compact_full = cache.get("compact_text", "")
-    non_ws_indices: List[int] = cache.get("non_ws_indices", [])
-    prefix_counts: List[int] = cache.get("prefix_counts", [])
-
-    bounded_hint = max(0, min(start_hint, len(prefix_counts) - 1)) if prefix_counts else 0
-    hint_compact_idx = prefix_counts[bounded_hint] if prefix_counts else 0
-    pos = compact_full.find(compact_anchor, hint_compact_idx)
-    if pos == -1:
-        return -1, -1
-
-    start_idx = non_ws_indices[pos]
-    last_pos = pos + len(compact_anchor) - 1
-    if last_pos >= len(non_ws_indices):
-        return start_idx, start_idx + len(anchor)
-    end_idx = non_ws_indices[last_pos] + 1
-    return start_idx, end_idx
-
-
-def materialize_clauses_from_anchors(full_text: str, raw_clauses: List[Dict]) -> List[Dict]:
-    """根据锚点把条款正文从原文中切片出来。"""
-
-    if not full_text or not raw_clauses:
-        return []
-
-    result: List[Dict[str, str]] = []
-    cursor = 0
-    text_len = len(full_text)
-    compact_cache: Dict[str, Any] = {}
-
-    for clause in raw_clauses:
-        start_anchor = (clause.get("start_anchor") or "").strip()
-        end_anchor = (clause.get("end_anchor") or "").strip()
-
-        if not start_anchor:
-            continue
-
-        start, start_match_end = _find_anchor_loose(
-            full_text, start_anchor, cursor, compact_cache
-        )
-        if start == -1:
-            continue
-
-        if end_anchor:
-            end_start, end_match_end = _find_anchor_loose(
-                full_text, end_anchor, start, compact_cache
-            )
-            if end_start == -1:
-                end = start_match_end
-            else:
-                end = end_match_end
-        else:
-            end = start_match_end
-
-        end = min(max(end, start_match_end), text_len)
-        text = full_text[start:end].strip()
-        if not text:
-            continue
-
-        result.append(
-            {
-                "clause_no": clause.get("clause_no", ""),
-                "section": clause.get("section", ""),
-                "text": text,
-            }
-        )
-        cursor = end
-
-    return result
-
-
-def fill_gaps(
-    full_text: str,
-    clauses: List[Dict[str, str]],
-    min_gap_chars: int = 50,
-) -> List[Dict[str, str]]:
-    """检测条款之间的缺口，并把缺失正文补成匿名条款。"""
-
-    if not full_text or not clauses:
-        return clauses or []
-
-    matched: List[Tuple[int, int, Dict[str, str]]] = []
-    matched_ids = set()
-    cursor = 0
-    text_len = len(full_text)
-
-    for clause in clauses:
-        text_value = (clause.get("text") or "").strip()
-        if not text_value:
-            continue
-        start = full_text.find(text_value, cursor)
-        if start == -1:
-            start = full_text.find(text_value)
-        if start == -1:
-            continue
-        end = start + len(text_value)
-        matched.append((start, end, clause))
-        matched_ids.add(id(clause))
-        cursor = end
-
-    if not matched:
-        return clauses
-
-    matched.sort(key=lambda item: item[0])
-    augmented: List[Tuple[int, int, Dict[str, str]]] = []
-    prev_end = 0
-
-    for start, end, clause in matched:
-        gap = start - prev_end
-        if gap >= min_gap_chars:
-            gap_text = full_text[prev_end:start].strip()
-            if gap_text:
-                augmented.append(
-                    (
-                        prev_end,
-                        start,
-                        {"clause_no": "", "section": "", "text": gap_text},
-                    )
-                )
-        augmented.append((start, end, clause))
-        prev_end = end
-
-    tail_gap = text_len - prev_end
-    if tail_gap >= min_gap_chars:
-        gap_text = full_text[prev_end:].strip()
-        if gap_text:
-            augmented.append(
-                (
-                    prev_end,
-                    text_len,
-                    {"clause_no": "", "section": "", "text": gap_text},
-                )
-            )
-
-    ordered = [item[2] for item in augmented]
-
-    for clause in clauses:
-        if id(clause) not in matched_ids:
-            ordered.append(clause)
-
-    return ordered
-
-
-def sliding_windows(text: str, window: int, overlap: int) -> List[str]:
-    if len(text) <= window:
-        return [text]
-    segments = []
-    start = 0
-    step = max(1, window - overlap)
-    text_len = len(text)
-    while start < text_len:
-        end = min(text_len, start + window)
-        segments.append(text[start:end])
-        if end >= text_len:
-            break
-        start += step
-    return segments
+ 
 
 
 class DeepseekClient:
@@ -457,119 +253,78 @@ def extract_json(content: str) -> Optional[Dict]:
     return None
 
 
-def llm_split_text(
-    title: str,
-    text: str,
-    client: DeepseekClient,
-    max_chars: int,
-    window: int,
-    overlap: int,
-) -> Optional[List[Dict[str, str]]]:
-    prompt_template = (
-        "任务：将下列《{TITLE}》合同文本分割为“条款级”结构化 JSON。\n"
-        "\n"
-        "严格要求（非常重要）：\n"
-        "1) 对每一条款，你必须先在【原文】中找到这一条的正文范围，然后：\n"
-        "   - start_anchor = 该条款正文【第一个字符开始的连续 30 个字符】；\n"
-        "   - end_anchor   = 该条款正文【最后的连续 30 个字符】；\n"
-        "2) start_anchor / end_anchor 必须满足：\n"
-        "   - 完全逐字从【原文】复制，不得擅自加入、省略或修改任何一个字、标点或空格；\n"
-        "   - 不得加入“...”等省略号；不得把不相邻的两段文本拼接在一起；\n"
-        "   - 不得跨越页码、章节标题等无关内容；\n"
-        "   - 每个锚点长度上限约 60 个字符（通常 30 个字符即可）；\n"
-        "   - 必须能在【原文】中用 Ctrl+F 精确搜索到完全一致的子串（忽略大小写）。\n"
-        "3) 如果某条款正文中间有换行，你也必须原样保留换行，不要合并成一行；\n"
-        "4) 绝对禁止的错误示例（不要这样做）：\n"
-        "   - 把“第一章 合作内容”与“第二章 合同金额”连成一个很长的 start_anchor；\n"
-        "   - 在锚点中加入“...”表示省略；\n"
-        "   - 把页码“1”或“2”与条款标题一起写进锚点。\n"
-        "5) 合法锚点示例：\n"
-        "   原文：\n"
-        "     第一章 服务项目\\n"
-        "     1.项目定义:根据甲乙双方友好协商,甲方委托乙方设计制作“四海易购”商城产品详情页面设计。\\n"
-        "   正确的 start_anchor 示例：\n"
-        "     \"1.项目定义:根据甲乙双方友好协商,甲方委托\"\n"
-        "   错误的 start_anchor 示例（禁止）：\n"
-        "     \"第一章服务项目 1.项目定义:根据甲乙双方友好协商,甲方委托乙方设计制作“四海易购”商城产品详情页面设计。第二章合同金额与付款方式\"（跨了下一章）。\n"
-        "\n"
-        "分割规则：\n"
-        "1) 优先按“第……条”“第一条”“第二条”等条款编号切分；\n"
-        "2) 有些合同使用“第一章/第二章”等章节标题，章节下可继续按条款编号细分；\n"
-        "3) 如果某些部分没有明显条款标题，则按语义连续自然段合并成约 400–900 字的片段，每个片段也视为一条记录；\n"
-        "4) 条款顺序必须与原文一致，不要跳过条款，不要合并本应独立的条款。\n"
-        "\n"
-        "输出格式要求：\n"
-        "1) 仅返回 JSON，顶层键为：clauses。\n"
-        "2) clauses 是一个数组，元素为：{clause_no, section, start_anchor, end_anchor}。\n"
-        "   - clause_no：条款编号，如“第一条”“第二十二条”，没有则填空字符串 \"\"；\n"
-        "   - section：条款标题，如“违约责任”“价款与支付”，没有标题则填空字符串 \"\"；\n"
-        "   - start_anchor：条款正文开头的锚点（见上面的严格要求）；\n"
-        "   - end_anchor：条款正文结尾的锚点（见上面的严格要求）。\n"
-        "\n"
-        "示例输出（仅为格式示例）：\n"
-        "{\"clauses\": [\n"
-        "  {\"clause_no\": \"第一条\", \"section\": \"车辆基本情况\", \"start_anchor\": \"本合同所指车辆为……\", \"end_anchor\": \"……并保证车辆不存在抵押、查封。\"},\n"
-        "  {\"clause_no\": \"第二条\", \"section\": \"价款与支付\", \"start_anchor\": \"本合同项下车辆总价款为人民币\", \"end_anchor\": \"……乙方应于收到车辆之日起三日内付清。\"}\n"
-        "]}\n"
-        "\n"
-        "合同全文如下：\n"
-        "{TEXT}\n"
-    )
 
-    segments = sliding_windows(text, window, overlap) if len(text) > max_chars else [text]
-    all_clauses: List[Dict[str, str]] = []
+# ========= 规则切分：按“第×条”拆合同条款 =========
 
-    for idx, seg in enumerate(segments):
-        prompt = prompt_template.replace("{TITLE}", title).replace("{TEXT}", seg)
-        try:
-            content = client.chat(prompt)
-        except Exception as e:
-            # 1) 直接打印出是哪一段 HTTP / 网络错误
-            print(f"[LLM ERROR][{title}][seg={idx}] {e}")
-            return None
+# 匹配“第×条 标题”的条款抬头：
+# - no:  第三十八条
+# - title: 保守商业秘密和竞业限制
+CLAUSE_HEADING_RE = re.compile(
+    r"(?P<full>(?P<no>第[一二三四五六七八九十百千万零两\d]+条)\s*(?P<title>[^\n\r，。,：:]{0,40}))"
+)
 
-        parsed = extract_json(content)
-        if not parsed or "clauses" not in parsed:
-            # 2) 把模型原始输出截断打印 & 落到文件里
-            preview = (content or "").strip().replace("\n", " ")
-            if len(preview) > 300:
-                preview = preview[:300] + "..."
 
-            print(f"[LLM JSON FAIL][{title}][seg={idx}] preview={preview}")
+def split_clauses_by_regex(full_text: str) -> List[Dict[str, str]]:
+    """
+    使用正则按“第×条”切分合同条款。
 
-            with open("deepseek_bad_responses.log", "a", encoding="utf-8") as f:
-                f.write(f"\n===== {title} seg={idx} =====\n")
-                f.write(content or "")
-                f.write("\n")
-            return None
+    返回的每个元素包含：
+    - clause_no: 例如 “第三十八条”，找不到则为 ""；
+    - section: 条款标题，例如 “保守商业秘密和竞业限制”，如果没有标题则为 ""；
+    - text: 条款完整正文（包含抬头行）。
+    """
+    text = full_text or ""
+    text = text.strip()
+    if not text:
+        return []
 
-        raw_clauses = parsed.get("clauses", []) or []
-        seg_clauses = materialize_clauses_from_anchors(seg, raw_clauses)
+    matches = list(CLAUSE_HEADING_RE.finditer(text))
+    clauses: List[Dict[str, str]] = []
 
-        print(
-            f"[DEBUG][{title}][seg={idx}] "
-            f"raw_clauses={len(raw_clauses)}, matched={len(seg_clauses)}"
+    # 没有任何“第×条”时，整个文档视为一个条款
+    if not matches:
+        clauses.append({"clause_no": "", "section": "", "text": text})
+        return clauses
+
+    # 前言：第一个“第×条”之前的部分
+    first_start = matches[0].start()
+    if first_start > 0:
+        preface = text[:first_start].strip()
+        if preface:
+            clauses.append(
+                {
+                    "clause_no": "",
+                    "section": "",
+                    "text": preface,
+                }
+            )
+
+    # 正式条款
+    for idx, m in enumerate(matches):
+        clause_no = (m.group("no") or "").strip()
+        raw_title = (m.group("title") or "").strip()
+
+        # 清理标题前面的标点
+        section_title = raw_title.lstrip("：:、.．，,")
+
+        start = m.start()
+        if idx + 1 < len(matches):
+            end = matches[idx + 1].start()
+        else:
+            end = len(text)
+        body = text[start:end].strip()
+        if not body:
+            continue
+
+        clauses.append(
+            {
+                "clause_no": clause_no,
+                "section": section_title,
+                "text": body,
+            }
         )
 
-        
-        debug_path = f"debug_anchors_{sanitize_filename(title)}_seg{idx}.json"
-        with open(debug_path, "w", encoding="utf-8") as f:
-            json.dump(raw_clauses, f, ensure_ascii=False, indent=2)
-        abs_path = os.path.abspath(debug_path)
-        print(
-            f"[DEBUG][{title}][seg={idx}] 原始锚点已保存到 {abs_path}，"
-            "可直接打开查看 DeepSeek 输出"
-        )
-
-        if not seg_clauses and raw_clauses:
-            print(f"[LLM ANCHOR FAIL][{title}][seg={idx}] 无法匹配锚点")
-        all_clauses.extend(seg_clauses)
-
-    if not all_clauses:
-        print(f"[LLM EMPTY CLAUSES][{title}]")
-        return None
-
-    return all_clauses
+    return clauses
 
 
 def estimate_tokens(text: str) -> int:
@@ -656,16 +411,12 @@ def process_file(
     cleaned = clean_text(raw_text)
     length_chars = len(cleaned)
 
-    clauses = None
-    attempted_llm = bool(cleaned and client)
+    # 1) 规则优先：按“第×条”切分条款
+    clauses = split_clauses_by_regex(cleaned)
 
-    if attempted_llm:
-        clauses = llm_split_text(title, cleaned, client, args.max_chars, args.window, args.overlap)
-        if clauses:
-            clauses = fill_gaps(cleaned, clauses, min_gap_chars=50)
-
+    # 理论上 split_clauses_by_regex 至少会返回 1 条；这里再兜一层底
     if not clauses:
-        raise RuntimeError(f"LLM 切分失败：{path}")
+        clauses = [{"clause_no": "", "section": "", "text": cleaned}]
 
     chunk_entries = []
     for clause in clauses:
@@ -735,9 +486,6 @@ def main():
     parser.add_argument("--output_dir", default="out_contracts_chunks", help="输出目录")
     parser.add_argument("--api_base", default="https://api.deepseek.com", help="DeepSeek API base URL")
     parser.add_argument("--model", default="deepseek-chat", choices=["deepseek-chat", "deepseek-reasoner"])
-    parser.add_argument("--max_chars", type=int, default=200000)
-    parser.add_argument("--window", type=int, default=20000)
-    parser.add_argument("--overlap", type=int, default=1000)
     parser.add_argument("--rate_limit_qps", type=float, default=0.5)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=120)
