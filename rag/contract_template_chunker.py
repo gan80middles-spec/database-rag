@@ -310,7 +310,19 @@ def compute_doc_id(path: Path, business_type: str) -> str:
     return f"TPL-{business_type.upper()}-{digest}"
 
 
-def process_file(path: Path, args, client: Optional[DeepseekClient], stats: Dict[str, int], docs_writer, chunks_writer):
+def sanitize_filename(name: str) -> str:
+    name = name.strip().replace("\u3000", " ")
+    safe = re.sub(r"[\\/\:*?\"<>|]+", "_", name)
+    safe = re.sub(r"\s+", "_", safe)
+    return safe or "document"
+
+
+def process_file(
+    path: Path,
+    args,
+    client: Optional[DeepseekClient],
+    stats: Dict[str, int],
+):
     business_type = business_type_from_path(path)
     legal_type = LEGAL_MAP.get(business_type, LEGAL_MAP["buy_sell"])
     title = path.stem
@@ -374,22 +386,22 @@ def process_file(path: Path, args, client: Optional[DeepseekClient], stats: Dict
         "length_chars": length_chars,
         "tags": [],
     }
-    docs_writer.write(json.dumps(doc_record, ensure_ascii=False) + "\n")
-
+    chunk_records = []
     for idx, clause in enumerate(chunk_entries, start=1):
-        chunk_record = {
-            "chunk_id": f"{doc_id}#clause-{idx}",
-            "doc_id": doc_id,
-            "doc_type": "contract_template",
-            "business_type": business_type,
-            "legal_type": legal_type,
-            "order": idx,
-            "clause_no": clause.get("clause_no", ""),
-            "section": clause.get("section", ""),
-            "text": clause.get("text", ""),
-            "token_count": estimate_tokens(clause.get("text", "")),
-        }
-        chunks_writer.write(json.dumps(chunk_record, ensure_ascii=False) + "\n")
+        chunk_records.append(
+            {
+                "chunk_id": f"{doc_id}#clause-{idx}",
+                "doc_id": doc_id,
+                "doc_type": "contract_template",
+                "business_type": business_type,
+                "legal_type": legal_type,
+                "order": idx,
+                "clause_no": clause.get("clause_no", ""),
+                "section": clause.get("section", ""),
+                "text": clause.get("text", ""),
+                "token_count": estimate_tokens(clause.get("text", "")),
+            }
+        )
 
     stats["files"] += 1
     stats.setdefault(business_type, 0)
@@ -398,6 +410,8 @@ def process_file(path: Path, args, client: Optional[DeepseekClient], stats: Dict
         print(f"[回退] {path}")
     else:
         print(f"[完成] {path}")
+
+    return doc_record, chunk_records
 
 
 def main():
@@ -428,9 +442,6 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    docs_path = output_dir / "docs.jsonl"
-    chunks_path = output_dir / "chunks.jsonl"
-
     client = DeepseekClient(
         api_base=args.api_base,
         model=args.model,
@@ -442,11 +453,19 @@ def main():
 
     all_files = [p for p in input_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".txt", ".docx", ".pdf"}]
     stats = {"files": 0, "fallback": 0}
-    with docs_path.open("w", encoding="utf-8") as docs_writer, chunks_path.open(
-        "w", encoding="utf-8"
-    ) as chunks_writer:
-        for file_path in tqdm(all_files, desc="Processing files"):
-            process_file(file_path, args, client, stats, docs_writer, chunks_writer)
+    for file_path in tqdm(all_files, desc="Processing files"):
+        result = process_file(file_path, args, client, stats)
+        if not result:
+            continue
+        doc_record, chunk_records = result
+        base_name = sanitize_filename(file_path.stem)
+        doc_file = output_dir / f"{base_name}-docs.jsonl"
+        chunk_file = output_dir / f"{base_name}-chunks.jsonl"
+        with doc_file.open("w", encoding="utf-8") as dw:
+            dw.write(json.dumps(doc_record, ensure_ascii=False) + "\n")
+        with chunk_file.open("w", encoding="utf-8") as cw:
+            for chunk in chunk_records:
+                cw.write(json.dumps(chunk, ensure_ascii=False) + "\n")
 
     print("处理完成：")
     print(f"  总文件数：{stats['files']}")
