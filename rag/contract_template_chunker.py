@@ -75,6 +75,55 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+def materialize_clauses_from_anchors(full_text: str, raw_clauses: List[Dict]) -> List[Dict]:
+    """根据锚点把条款正文从原文中切片出来。"""
+
+    if not full_text or not raw_clauses:
+        return []
+
+    result: List[Dict[str, str]] = []
+    cursor = 0
+    text_len = len(full_text)
+
+    for clause in raw_clauses:
+        start_anchor = (clause.get("start_anchor") or "").strip()
+        end_anchor = (clause.get("end_anchor") or "").strip()
+
+        if not start_anchor:
+            continue
+
+        start = full_text.find(start_anchor, cursor)
+        if start == -1:
+            start = full_text.find(start_anchor)
+        if start == -1:
+            continue
+
+        if end_anchor:
+            end = full_text.find(end_anchor, start)
+            if end == -1:
+                end = start + len(start_anchor)
+            else:
+                end += len(end_anchor)
+        else:
+            end = start + len(start_anchor)
+
+        end = min(max(end, start + len(start_anchor)), text_len)
+        text = full_text[start:end].strip()
+        if not text:
+            continue
+
+        result.append(
+            {
+                "clause_no": clause.get("clause_no", ""),
+                "section": clause.get("section", ""),
+                "text": text,
+            }
+        )
+        cursor = end
+
+    return result
+
+
 def sliding_windows(text: str, window: int, overlap: int) -> List[str]:
     if len(text) <= window:
         return [text]
@@ -278,15 +327,19 @@ def llm_split_text(
         "任务：将下列《{TITLE}》合同文本分割为“条款级”结构化 JSON。\n"
         "要求：\n"
         "1) 按“第……条/第一条/第二条”等条款标题切分；若标题不明确，按语义连续自然段合并成约400–900字片段；\n"
-        "2) 仅返回 JSON，键为：clauses: [{clause_no, section, text}]；\n"
+        "2) 仅返回 JSON，键为：clauses: [{clause_no, section, start_anchor, end_anchor}]；\n"
         "   - clause_no：如“第一条”，可为空；\n"
         "   - section：条标题（如“违约责任”），可为空；\n"
-        "   - text：该条完整正文（去多余空行，不改写）；\n"
-        "3) 条款顺序必须与原文一致；不要任何解释、前后缀。\n"
+        "   - start_anchor：条款正文开头附近20～40个字符，直接从原文复制；\n"
+        "   - end_anchor：条款正文结尾附近20～40个字符，直接从原文复制；\n"
+        "3) 锚点必须直接从原文复制，不要改写、扩写或增加省略号；\n"
+        "4) 条款顺序必须与原文一致；不要任何解释、前后缀。\n"
         "合同全文如下：\n{TEXT}\n"
         "输出示例：\n"
-        "{\"clauses\":[\n  {\"clause_no\":\"第一条\",\"section\":\"车辆基本情况\",\"text\":\"……\"},\n"
-        "  {\"clause_no\":\"第二条\",\"section\":\"价款与支付\",\"text\":\"……\"}\n]}"
+        "{\"clauses\": [\n"
+        "  {\"clause_no\": \"第一条\", \"section\": \"车辆基本情况\", \"start_anchor\": \"本合同所指车辆为……\", \"end_anchor\": \"……并保证车辆不存在抵押、查封。\"},\n"
+        "  {\"clause_no\": \"第二条\", \"section\": \"价款与支付\", \"start_anchor\": \"本合同项下车辆总价款为人民币\", \"end_anchor\": \"……乙方应于收到车辆之日起三日内付清。\"}\n"
+        "]}"
     )
 
     segments = sliding_windows(text, window, overlap) if len(text) > max_chars else [text]
@@ -316,18 +369,10 @@ def llm_split_text(
                 f.write("\n")
             return None
 
-        seg_clauses: List[Dict[str, str]] = []
-        for clause in parsed.get("clauses", []):
-            text_value = (clause.get("text") or "").strip()
-            if not text_value:
-                continue
-            seg_clauses.append(
-                {
-                    "clause_no": clause.get("clause_no", ""),
-                    "section": clause.get("section", ""),
-                    "text": text_value,
-                }
-            )
+        raw_clauses = parsed.get("clauses", []) or []
+        seg_clauses = materialize_clauses_from_anchors(seg, raw_clauses)
+        if not seg_clauses and raw_clauses:
+            print(f"[LLM ANCHOR FAIL][{title}][seg={idx}] 无法匹配锚点")
         all_clauses.extend(seg_clauses)
 
     if not all_clauses:
