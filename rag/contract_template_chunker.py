@@ -743,7 +743,6 @@ def process_file(
                 "token_count": estimate_tokens(clause_text),
                 "clause_type": clause_types,
                 "chunk_md5": compute_chunk_md5(chunk_id, clause_text),
-                "text_md5": compute_text_md5(clause_text),
             }
         )
 
