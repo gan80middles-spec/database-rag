@@ -490,6 +490,16 @@ def compute_doc_id(path: Path, business_type: str) -> str:
     return f"TPL-{business_type.upper()}-{digest}"
 
 
+def compute_text_md5(text: str) -> str:
+    text = text or ""
+    return f"md5:{hashlib.md5(text.encode('utf-8')).hexdigest()}"
+
+
+def compute_chunk_md5(chunk_id: str, text: str) -> str:
+    text = text or ""
+    return f"md5:{hashlib.md5(f'{chunk_id}|{text}'.encode('utf-8')).hexdigest()}"
+
+
 def sanitize_filename(name: str) -> str:
     name = name.strip().replace("\u3000", " ")
     safe = re.sub(r"[\\/\:*?\"<>|]+", "_", name)
@@ -704,10 +714,12 @@ def process_file(
     legal_type = llm_infer_legal_type(title, cleaned, client) or LEGAL_MAP.get(
         business_type, LEGAL_MAP["buy_sell"]
     )
+    doc_text_md5 = compute_text_md5(cleaned)
 
     chunk_records = []
     for idx, clause in enumerate(chunk_entries, start=1):
         clause_text = clause.get("text", "")
+        chunk_id = f"{doc_id}#clause-{idx}"
         clause_types = llm_classify_clause(
             business_type,
             clause.get("section", ""),
@@ -719,7 +731,7 @@ def process_file(
                 presence[ctype] = True
         chunk_records.append(
             {
-                "chunk_id": f"{doc_id}#clause-{idx}",
+                "chunk_id": chunk_id,
                 "doc_id": doc_id,
                 "doc_type": "contract_template",
                 "business_type": business_type,
@@ -730,6 +742,8 @@ def process_file(
                 "text": clause_text,
                 "token_count": estimate_tokens(clause_text),
                 "clause_type": clause_types,
+                "chunk_md5": compute_chunk_md5(chunk_id, clause_text),
+                "text_md5": compute_text_md5(clause_text),
             }
         )
 
@@ -743,6 +757,7 @@ def process_file(
         "length_chars": length_chars,
         "tags": tags,
         "presence": presence,
+        "text_md5": doc_text_md5,
     }
 
     stats["files"] += 1
