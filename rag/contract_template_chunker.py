@@ -263,6 +263,14 @@ CLAUSE_HEADING_RE = re.compile(
     r"(?P<full>(?P<no>第[一二三四五六七八九十百千万零两\d]+条)\s*(?P<title>[^\n\r，。,：:]{0,40}))"
 )
 
+CHAPTER_HEADING_RE = re.compile(
+    r"(?m)^\s*(?P<full>(?P<no>第[一二三四五六七八九十百千万零两\d]+章)\s*(?P<title>[^\n\r，。,：:]{0,40}))"
+)
+
+GENERIC_HEADING_RE = re.compile(
+    r"(?m)^\s*(?P<full>(?P<marker>(?:\d{1,3}|[一二三四五六七八九十]+|[（(][一二三四五六七八九十0-9]{1,3}[)）]))[\.．、)]\s*(?P<title>[^\n\r]{0,60}))"
+)
+
 
 def split_clauses_by_regex(full_text: str) -> List[Dict[str, str]]:
     """
@@ -323,6 +331,50 @@ def split_clauses_by_regex(full_text: str) -> List[Dict[str, str]]:
                 "text": body,
             }
         )
+
+    return clauses
+
+
+def split_sections_by_heading(
+    full_text: str,
+    heading_regex: re.Pattern,
+    clause_group: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """通用的章节/编号切分：按给定正则把文档拆成多个 section。"""
+
+    text = full_text or ""
+    text = text.strip()
+    if not text:
+        return []
+
+    matches = list(heading_regex.finditer(text))
+    if not matches:
+        return []
+
+    clauses: List[Dict[str, str]] = []
+
+    first_start = matches[0].start()
+    if first_start > 0:
+        preface = text[:first_start].strip()
+        if preface:
+            clauses.append({"clause_no": "", "section": "", "text": preface})
+
+    for idx, m in enumerate(matches):
+        start = m.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        if not body:
+            continue
+
+        clause_no = ""
+        if clause_group:
+            clause_no = (m.groupdict().get(clause_group) or "").strip()
+
+        title = (m.groupdict().get("title") or "").strip()
+        full_heading = (m.groupdict().get("full") or "").strip()
+        section_label = title or full_heading or clause_no
+
+        clauses.append({"clause_no": clause_no, "section": section_label, "text": body})
 
     return clauses
 
@@ -413,6 +465,24 @@ def process_file(
 
     # 1) 规则优先：按“第×条”切分条款
     clauses = split_clauses_by_regex(cleaned)
+
+    if len(clauses) <= 1:
+        chapter_sections = split_sections_by_heading(
+            cleaned,
+            CHAPTER_HEADING_RE,
+            clause_group="no",
+        )
+        if len(chapter_sections) > 1:
+            clauses = chapter_sections
+
+    if len(clauses) <= 1:
+        numbered_sections = split_sections_by_heading(
+            cleaned,
+            GENERIC_HEADING_RE,
+            clause_group="marker",
+        )
+        if len(numbered_sections) > 1:
+            clauses = numbered_sections
 
     # 理论上 split_clauses_by_regex 至少会返回 1 条；这里再兜一层底
     if not clauses:
