@@ -354,7 +354,7 @@ def extract_json(content: str) -> Optional[Dict]:
 # - no:  第三十八条
 # - title: 保守商业秘密和竞业限制
 CLAUSE_HEADING_RE = re.compile(
-    r"(?P<full>(?P<no>第[一二三四五六七八九十百千万零两\d]+条)\s*(?P<title>[^\n\r，。,：:]{0,40}))"
+    r"(?m)^\s*(?P<full>(?P<no>第[一二三四五六七八九十百千万零两\d]+条)\s*(?P<title>[^\n\r，。,：:]{0,40}))"
 )
 
 CHAPTER_HEADING_RE = re.compile(
