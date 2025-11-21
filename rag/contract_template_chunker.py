@@ -380,7 +380,28 @@ def split_clauses_by_regex(full_text: str) -> List[Dict[str, str]]:
     if not text:
         return []
 
-    matches = list(CLAUSE_HEADING_RE.finditer(text))
+    def _is_probable_heading(start_idx: int) -> bool:
+        """
+        粗略判断匹配到的“第×条”是否真的位于条款抬头位置。
+
+        某些合同在排版时会在句中换行，例如 “……本协议\n第一条规定……”，会被
+        CLAUSE_HEADING_RE 误识别为新条款抬头。为了降低此类误切分概率，要求在条
+        款抬头之前是行首或以句读符号结尾。
+        """
+
+        # 回溯到匹配开始前的第一个非空白字符
+        i = start_idx - 1
+        while i >= 0 and text[i].isspace():
+            i -= 1
+
+        # 文档开头，直接视为合法抬头
+        if i < 0:
+            return True
+
+        # 前一个非空白字符如果是常见的句子结束或分隔标点，则认为是新条款抬头
+        return text[i] in "。．.！？!?；;:：\n"
+
+    matches = [m for m in CLAUSE_HEADING_RE.finditer(text) if _is_probable_heading(m.start())]
     clauses: List[Dict[str, str]] = []
 
     # 没有任何“第×条”时，整个文档视为一个条款
