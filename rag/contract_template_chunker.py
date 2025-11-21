@@ -523,6 +523,19 @@ def infer_heading_level(clause_no: str) -> int:
     return 1
 
 
+def is_numeric_heading(label: str) -> bool:
+    """判断标题是否以数字类序号开头（纯数字或“第×条/章”）。"""
+
+    if not label:
+        return False
+
+    label = label.strip()
+    if re.match(r"^第[^\s]{1,6}[章条]", label):
+        return True
+
+    return bool(re.match(r"^[0-9]+(?:[\.．][0-9]+)*", label))
+
+
 def business_type_from_path(path: Path) -> str:
     parent = path.parent.name.lower()
     return parent if parent in VALID_BUSINESS_TYPES else "buy_sell"
@@ -746,9 +759,21 @@ def process_file(
             section_label = section
 
         level = infer_heading_level(clause_no)
-        parent_section = current_parent if level > 1 else ""
-        if level == 1 and section_label:
-            current_parent = section_label
+        parent_section = ""
+
+        # 如果当前已有上级（常见为中文编号）且出现纯数字编号，视为子级
+        if (
+            level == 1
+            and current_parent
+            and not is_numeric_heading(current_parent)
+            and re.match(r"^[0-9]+(?:\.\d+)*$", clause_no or "")
+        ):
+            level = 2
+            parent_section = current_parent
+        else:
+            parent_section = current_parent if level > 1 else ""
+            if level == 1 and section_label:
+                current_parent = section_label
 
         section_path: List[str] = []
         if current_parent:
