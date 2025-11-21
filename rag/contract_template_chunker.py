@@ -499,6 +499,43 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 2)
 
 
+def infer_heading_level(clause_no: str) -> int:
+    """粗略推断条款编号的层级：1=章/条/一级编号，2+=子条款。"""
+
+    if not clause_no:
+        return 1
+
+    clause_no = clause_no.strip()
+    # 第×章 / 第×条
+    if re.match(r"^第[^\n\r]{1,6}[章条]$", clause_no):
+        return 1
+
+    # 纯数字或中文数字视为一级；带小数点/连字符视为子级
+    if re.match(r"^[一二三四五六七八九十百千万两\d]+(\.\d+)*$", clause_no):
+        if "." in clause_no:
+            return clause_no.count(".") + 1
+        return 1
+
+    # 圆括号/中文括号数字：视为子级
+    if re.match(r"^[（(][一二三四五六七八九十0-9]{1,4}[)）]$", clause_no):
+        return 2
+
+    return 1
+
+
+def is_numeric_heading(label: str) -> bool:
+    """判断标题是否以数字类序号开头（纯数字或“第×条/章”）。"""
+
+    if not label:
+        return False
+
+    label = label.strip()
+    if re.match(r"^第[^\s]{1,6}[章条]", label):
+        return True
+
+    return bool(re.match(r"^[0-9]+(?:[\.．][0-9]+)*", label))
+
+
 def business_type_from_path(path: Path) -> str:
     parent = path.parent.name.lower()
     return parent if parent in VALID_BUSINESS_TYPES else "buy_sell"
@@ -706,10 +743,12 @@ def process_file(
         clauses = [{"clause_no": "", "section": "", "text": cleaned}]
 
     chunk_entries = []
+    current_parent: str = ""
     for clause in clauses:
         text_value = clause.get("text", "").strip()
         if not text_value and len(clauses) > 1:
             continue
+
         clause_no = clause.get("clause_no", "").strip()
         section = clause.get("section", "").strip()
         if clause_no and section:
@@ -718,10 +757,36 @@ def process_file(
             section_label = clause_no
         else:
             section_label = section
+
+        level = infer_heading_level(clause_no)
+        parent_section = ""
+
+        # 如果当前已有上级（常见为中文编号）且出现纯数字编号，视为子级
+        if (
+            level == 1
+            and current_parent
+            and not is_numeric_heading(current_parent)
+            and re.match(r"^[0-9]+(?:\.\d+)*$", clause_no or "")
+        ):
+            level = 2
+            parent_section = current_parent
+        else:
+            parent_section = current_parent if level > 1 else ""
+            if level == 1 and section_label:
+                current_parent = section_label
+
+        section_path: List[str] = []
+        if current_parent:
+            section_path.append(current_parent)
+        if level > 1 and section_label and section_label != current_parent:
+            section_path.append(section_label)
+
         chunk_entries.append(
             {
                 "clause_no": clause_no,
                 "section": section_label,
+                "parent_section": parent_section,
+                "section_path": section_path,
                 "text": text_value,
             }
         )
@@ -760,6 +825,8 @@ def process_file(
                 "order": idx,
                 "clause_no": clause.get("clause_no", ""),
                 "section": clause.get("section", ""),
+                "parent_section": clause.get("parent_section", ""),
+                "section_path": clause.get("section_path", []),
                 "text": clause_text,
                 "token_count": estimate_tokens(clause_text),
                 "clause_type": clause_types,
