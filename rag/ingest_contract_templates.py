@@ -67,19 +67,14 @@ def ensure_milvus_collection(
             FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, is_primary=True, max_length=256),
             FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=128),
             FieldSchema(name="doc_type", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="case_type", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="court", dtype=DataType.VARCHAR, max_length=128),
-            FieldSchema(name="cause", dtype=DataType.VARCHAR, max_length=128),
-            FieldSchema(name="contract_type", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="business_type", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="legal_type", dtype=DataType.VARCHAR, max_length=64),
             FieldSchema(name="section", dtype=DataType.VARCHAR, max_length=128),
-            FieldSchema(name="law_name", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="article_no", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="version_date", dtype=DataType.VARCHAR, max_length=16),
-            FieldSchema(name="validity_status", dtype=DataType.VARCHAR, max_length=16),
+            FieldSchema(name="order", dtype=DataType.INT64),
             FieldSchema(name="chunk_index", dtype=DataType.INT64),
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
         ]
-        schema = CollectionSchema(fields, description="LawLLM contract template chunks (no raw text)")
+        schema = CollectionSchema(fields, description="Contract template chunks with scalar metadata")
         coll = Collection(name=col_name, schema=schema, using="default")
         coll.create_index(
             field_name="embedding",
@@ -128,7 +123,7 @@ def ensure_mongo_chunks(uri: str, db: str, col: str):
     c.create_index("chunk_id", unique=True)
     c.create_index([("doc_id", 1), ("chunk_index", 1)])
     c.create_index([("doc_type", 1), ("section", 1)])
-    c.create_index([("doc_type", 1), ("contract_type", 1)])
+    c.create_index([("doc_type", 1), ("business_type", 1)])
     return c
 
 
@@ -210,9 +205,9 @@ def build_doc_record(doc_row: Dict[str, Any]) -> Dict[str, Any]:
 def prepare_chunk_doc(row: Dict[str, Any], embedding_dim: int) -> Dict[str, Any]:
     doc = dict(row)
     doc.setdefault("doc_type", "contract_template")
-    doc.setdefault("contract_type", doc.get("business_type", ""))
+    doc.setdefault("business_type", doc.get("contract_type", ""))
     doc.setdefault("chunk_index", int(doc.get("order", doc.get("chunk_index", 0))))
-    doc.pop("order", None)
+    doc.setdefault("order", doc.get("chunk_index", 0))
     doc["embedding_dim"] = embedding_dim
     return doc
 
@@ -222,15 +217,10 @@ def build_milvus_rows(sub_rows: List[Dict[str, Any]], sub_emb: List[List[float]]
         "chunk_id": [r["chunk_id"] for r in sub_rows],
         "doc_id": [r.get("doc_id", "") for r in sub_rows],
         "doc_type": [r.get("doc_type", "contract_template") for r in sub_rows],
-        "case_type": ["" for _ in sub_rows],
-        "court": ["" for _ in sub_rows],
-        "cause": ["" for _ in sub_rows],
-        "contract_type": [r.get("contract_type") or r.get("business_type") or "" for r in sub_rows],
+        "business_type": [r.get("business_type") or r.get("contract_type") or "" for r in sub_rows],
+        "legal_type": [r.get("legal_type", "") for r in sub_rows],
         "section": [r.get("section") or r.get("clause_no") or "" for r in sub_rows],
-        "law_name": ["" for _ in sub_rows],
-        "article_no": ["" for _ in sub_rows],
-        "version_date": ["" for _ in sub_rows],
-        "validity_status": ["valid" for _ in sub_rows],
+        "order": [int(r.get("order", r.get("chunk_index", 0))) for r in sub_rows],
         "chunk_index": [int(r.get("chunk_index", 0)) for r in sub_rows],
         "embedding": sub_emb,
     }
@@ -258,15 +248,15 @@ def main() -> None:
 
     ap.add_argument("--mongo_uri", default="mongodb://localhost:27017")
     ap.add_argument("--mongo_db", default="lawkb")
-    ap.add_argument("--mongo_chunk_col", default="law_kb_chunks")
-    ap.add_argument("--mongo_doc_col", default="law_kb_docs")
+    ap.add_argument("--mongo_chunk_col", default="contract_kb_chunks")
+    ap.add_argument("--mongo_doc_col", default="contract_kb_docs")
     ap.add_argument("--mongo_only", type=int, default=0, help="1=仅写Mongo，不连接Milvus/不计算向量")
 
     ap.add_argument("--milvus_host", default="127.0.0.1")
     ap.add_argument("--milvus_port", default="19530")
     ap.add_argument("--milvus_token", default="")
     ap.add_argument("--milvus_uri", default="")
-    ap.add_argument("--collection", default="law_kb_chunk")
+    ap.add_argument("--collection", default="contract_kb_chunks")
 
     ap.add_argument("--model", default="BAAI/bge-m3")
     ap.add_argument("--dim", type=int, default=1024)
