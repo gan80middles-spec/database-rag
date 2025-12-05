@@ -27,7 +27,8 @@
     复用已存在的大小写形式并提示警告，确保索引创建与写入能继续。
 5. **写入 Milvus（向量库）**
    - 当 `--mongo_only 0` 时：
-     - 确认/创建集合（默认 `contract_kb_chunks`，可 `--recreate 1` 先删除重建）。
+     - 确认/创建集合（默认 `contract_kb_chunks`，可 `--recreate 1` 先删除重建）。默认字符串字段长度已放宽（doc_id/section 等为 256，business_type/legal_type 为 128），如已有旧集合需使用 `--recreate 1` 才能更新 schema。
+     - 写入前会自动根据集合 schema 截断超长字符串，避免出现 “string exceeds max length” 的 Milvus 报错。
      - 将 `chunk_id`、`doc_id`、`doc_type`、`business_type`、`legal_type`、`order`、`chunk_index`、`section` 及向量一并插入；如主键冲突会先删除再插入。
 
 ## 与样例文件的对应关系

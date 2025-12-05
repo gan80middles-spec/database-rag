@@ -65,11 +65,11 @@ def ensure_milvus_collection(
     if not utility.has_collection(col_name):
         fields = [
             FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, is_primary=True, max_length=256),
-            FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=128),
-            FieldSchema(name="doc_type", dtype=DataType.VARCHAR, max_length=32),
-            FieldSchema(name="business_type", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="legal_type", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="section", dtype=DataType.VARCHAR, max_length=128),
+            FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=256),
+            FieldSchema(name="doc_type", dtype=DataType.VARCHAR, max_length=64),
+            FieldSchema(name="business_type", dtype=DataType.VARCHAR, max_length=128),
+            FieldSchema(name="legal_type", dtype=DataType.VARCHAR, max_length=128),
+            FieldSchema(name="section", dtype=DataType.VARCHAR, max_length=256),
             FieldSchema(name="order", dtype=DataType.INT64),
             FieldSchema(name="chunk_index", dtype=DataType.INT64),
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=dim),
@@ -83,6 +83,29 @@ def ensure_milvus_collection(
     coll = Collection(col_name)
     coll.load()
     return coll
+
+
+def clamp_strings_to_schema(coll: Collection, data: List[List[Any]]) -> List[List[Any]]:
+    """Trim string fields to the collection's max_length to avoid Milvus errors."""
+
+    schema = {f.name: f for f in coll.schema.fields}
+    trimmed: List[List[Any]] = []
+    for field_name, column in zip(coll.schema.fields, data):
+        field = schema.get(field_name.name)
+        if field is None or field.dtype != DataType.VARCHAR:
+            trimmed.append(column)
+            continue
+
+        max_len = field.params.get("max_length", 0) or 0
+        new_col: List[Any] = []
+        for value in column:
+            s = "" if value is None else str(value)
+            if max_len and len(s) > max_len:
+                new_col.append(s[:max_len])
+            else:
+                new_col.append(s)
+        trimmed.append(new_col)
+    return trimmed
 
 
 def insert_milvus(coll: Collection, batch_rows: Dict[str, List[Any]]) -> None:
@@ -100,6 +123,7 @@ def insert_milvus(coll: Collection, batch_rows: Dict[str, List[Any]]) -> None:
         print(f"[WARN] 这些列在集合中不存在，将忽略: {extra}")
 
     data = [batch_rows[name] for name in schema_fields]
+    data = clamp_strings_to_schema(coll, data)
     try:
         coll.insert(data)
     except Exception:
