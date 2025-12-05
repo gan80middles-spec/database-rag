@@ -115,7 +115,22 @@ def insert_milvus(coll: Collection, batch_rows: Dict[str, List[Any]]) -> None:
 
 def ensure_mongo_collection(uri: str, db: str, col: str):
     client = MongoClient(uri)
-    return client[db][col]
+
+    # 部分 Mongo 部署在同一实例下已存在名称大小写不同的库时会拒绝再次创建，
+    # 例如已有 "lawKB" 而传入 "lawkb" 会抛出 `DatabaseDifferCase`。这里先枚举
+    # 已有库，若仅大小写不同则复用已有名称并给出提示，以避免运行时才报错。
+    db_names = set(client.list_database_names())
+    db_lower_map = {name.lower(): name for name in db_names}
+    target_db = db
+    existing_db = db_lower_map.get(db.lower())
+    if existing_db and existing_db != db:
+        print(
+            f"[WARN] Database '{existing_db}' already exists (case-insensitive match for '{db}'). "
+            "Will reuse existing database name to avoid DatabaseDifferCase error."
+        )
+        target_db = existing_db
+
+    return client[target_db][col]
 
 
 def ensure_mongo_chunks(uri: str, db: str, col: str):
