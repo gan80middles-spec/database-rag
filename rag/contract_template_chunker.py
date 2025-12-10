@@ -12,6 +12,7 @@ import requests
 from docx import Document
 from pypdf import PdfReader
 from tqdm import tqdm
+from presence_schema import ContractType, PresenceDefinition
 
 
 LEGAL_MAP = {
@@ -25,8 +26,9 @@ LEGAL_MAP = {
 
 VALID_BUSINESS_TYPES = set(LEGAL_MAP.keys())
 
-PRESENCE_SCHEMAS = {
-    "buy_sell": [
+# 原始 presence 模板数据，仍保留 dict 结构，便于查看与维护
+RAW_PRESENCE_SCHEMAS: dict[ContractType, list[dict[str, object]]] = {
+    ContractType.BUY_SELL: [
         {"id": "party_info", "label": "当事人信息（出卖人/买受人）", "required": True},
         {"id": "subject", "label": "标的物名称/型号", "required": True},
         {"id": "quantity", "label": "数量与计量方式", "required": True},
@@ -41,7 +43,7 @@ PRESENCE_SCHEMAS = {
         {"id": "breach_liability", "label": "违约责任/损害赔偿", "required": True},
         {"id": "dispute_resolution", "label": "争议解决（适用法/仲裁/法院）", "required": True},
     ],
-    "lease": [
+    ContractType.LEASE: [
         {"id": "party_info", "label": "出租人/承租人信息", "required": True},
         {"id": "leased_property", "label": "租赁物名称/数量/状况", "required": True},
         {"id": "purpose", "label": "用途与使用限制", "required": True},
@@ -55,7 +57,7 @@ PRESENCE_SCHEMAS = {
         {"id": "breach_termination", "label": "违约与解除/提前终止", "required": True},
         {"id": "dispute_resolution", "label": "争议解决", "required": True},
     ],
-    "labor": [
+    ContractType.LABOR: [
         {"id": "party_info", "label": "用人单位/劳动者信息", "required": True},
         {"id": "term", "label": "合同期限/试用期（如有）", "required": True},
         {"id": "job_and_location", "label": "工作内容/岗位与地点", "required": True},
@@ -69,7 +71,7 @@ PRESENCE_SCHEMAS = {
         {"id": "termination", "label": "解除/终止与经济补偿", "required": True},
         {"id": "dispute_resolution", "label": "争议解决（仲裁/诉讼）", "required": True},
     ],
-    "nda": [
+    ContractType.NDA: [
         {"id": "party_info", "label": "当事人信息", "required": True},
         {"id": "confidential_definition", "label": "保密信息的范围/定义", "required": True},
         {"id": "use_scope", "label": "使用范围/目的限制", "required": True},
@@ -82,7 +84,7 @@ PRESENCE_SCHEMAS = {
         {"id": "breach_remedy", "label": "违约责任/禁令救济/损害赔偿", "required": True},
         {"id": "dispute_resolution", "label": "争议解决", "required": True},
     ],
-    "outsourcing": [
+    ContractType.OUTSOURCING: [
         {"id": "party_info", "label": "委托方/服务方信息", "required": True},
         {"id": "scope_deliverables", "label": "工作范围/交付成果与规格", "required": True},
         {"id": "timeline_milestones", "label": "进度/里程碑/服务期限", "required": True},
@@ -97,7 +99,7 @@ PRESENCE_SCHEMAS = {
         {"id": "termination", "label": "解除/终止与费用清算", "required": True},
         {"id": "dispute_resolution", "label": "争议解决", "required": True},
     ],
-    "software": [
+    ContractType.SOFTWARE: [
         {"id": "party_info", "label": "许可方/被许可方信息", "required": True},
         {"id": "license_grant", "label": "许可范围（地域/期限/方式/是否独占）", "required": True},
         {"id": "usage_restrictions", "label": "使用限制（并发/终端/不得反向工程等）", "required": True},
@@ -114,10 +116,67 @@ PRESENCE_SCHEMAS = {
     ],
 }
 
-PRESENCE_ID_SET: Dict[str, Set[str]] = {
-    btype: {item["id"] for item in schema}
-    for btype, schema in PRESENCE_SCHEMAS.items()
+
+def build_presence_definitions() -> list[PresenceDefinition]:
+    """将原始 dict 数据转换成 PresenceDefinition 列表。"""
+
+    definitions: list[PresenceDefinition] = []
+    for contract_type, entries in RAW_PRESENCE_SCHEMAS.items():
+        for item in entries:
+            definitions.append(
+                PresenceDefinition(
+                    contract_type=contract_type,
+                    id=str(item["id"]),
+                    label=str(item["label"]),
+                    required=bool(item.get("required", False)),
+                    weight=1.0,
+                )
+            )
+    return definitions
+
+
+# schema 化后的只读索引，便于 chunker/QA 等模块复用
+ALL_PRESENCE_DEFINITIONS: list[PresenceDefinition] = build_presence_definitions()
+PRESENCE_DEF_BY_TYPE: dict[ContractType, list[PresenceDefinition]] = {}
+for definition in ALL_PRESENCE_DEFINITIONS:
+    PRESENCE_DEF_BY_TYPE.setdefault(definition.contract_type, []).append(definition)
+
+PRESENCE_DEF_INDEX: dict[tuple[ContractType, str], PresenceDefinition] = {
+    (definition.contract_type, definition.id): definition
+    for definition in ALL_PRESENCE_DEFINITIONS
 }
+
+# 仅保留 id 集合，供快速初始化模板
+PRESENCE_ID_SET: Dict[ContractType, Set[str]] = {
+    contract_type: {definition.id for definition in definitions}
+    for contract_type, definitions in PRESENCE_DEF_BY_TYPE.items()
+}
+
+
+def get_presence_definitions(contract_type: ContractType) -> list[PresenceDefinition]:
+    """返回某合同类型的 PresenceDefinition 列表。"""
+
+    return PRESENCE_DEF_BY_TYPE.get(contract_type, [])
+
+
+def get_presence_definition(contract_type: ContractType, presence_id: str) -> PresenceDefinition:
+    """获取单个 PresenceDefinition。"""
+
+    try:
+        return PRESENCE_DEF_INDEX[(contract_type, presence_id)]
+    except KeyError:
+        raise KeyError(f"presence definition not found: {contract_type} / {presence_id}") from None
+
+
+def get_legacy_presence_schema(contract_type: ContractType) -> list[dict[str, object]]:
+    """
+    返回旧版 dict 结构，便于未重构的调用方继续复用。
+    """
+
+    return [
+        {"id": definition.id, "label": definition.label, "required": definition.required}
+        for definition in get_presence_definitions(contract_type)
+    ]
 
 FULLWIDTH_TABLE = {
     ord("："): ":",
@@ -566,7 +625,12 @@ def sanitize_filename(name: str) -> str:
 
 
 def build_presence_template(business_type: str) -> Dict[str, bool]:
-    ids = PRESENCE_ID_SET.get(business_type, set())
+    try:
+        contract_type = ContractType(business_type)
+    except ValueError:
+        return {}
+
+    ids = PRESENCE_ID_SET.get(contract_type, set())
     return {pid: False for pid in ids}
 
 
@@ -616,13 +680,21 @@ def llm_classify_clause(
     if not client:
         return []
 
-    schema = PRESENCE_SCHEMAS.get(business_type, [])
+    try:
+        contract_type = ContractType(business_type)
+    except ValueError:
+        return []
+
+    schema = get_presence_definitions(contract_type)
     if not schema:
         return []
 
     snippet = text.strip()[:max_chars]
     choices = "\n".join(
-        [f"- {item['id']}: {item['label']} (必填:{'是' if item['required'] else '否'})" for item in schema]
+        [
+            f"- {item.id}: {item.label} (必填:{'是' if item.required else '否'})"
+            for item in schema
+        ]
     )
     prompt = (
         "请根据下列合同条款内容，判断其涵盖的条款类型 ID。\n"
@@ -647,7 +719,7 @@ def llm_classify_clause(
         print(f"[LLM CLAUSE TYPE FAIL][{section_label}] content={(content or '').strip()[:200]}")
         return []
 
-    allowed = PRESENCE_ID_SET.get(business_type, set())
+    allowed = PRESENCE_ID_SET.get(contract_type, set())
     cleaned: List[str] = []
     for item in clause_type:
         if isinstance(item, str):
