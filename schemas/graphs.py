@@ -5,6 +5,7 @@ from enum import Enum
 from typing import List, Optional, Literal
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
+from schemas.presence_schema import ContractType
 
 
 # =========================
@@ -78,17 +79,6 @@ class RiskSeverity(str, Enum):
     RISK_LOW = "low"
     RISK_MEDIUM = "medium"
     RISK_HIGH = "high"
-
-
-class ContractType(str, Enum):
-    LABOR = "labor"
-    LEASE = "lease"
-    NDA = "nda"
-    SOFTWARE = "software"
-    OUTSOURCING = "outsourcing"
-    BUY_SELL = "buy_sell"
-    SERVICE = "service"
-    OTHER = "other"
 
 
 class ContractSource(str, Enum):
