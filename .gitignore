@@ -2,3 +2,5 @@ models/
 *.bin
 *.pt
 *.ckpt
+*.txt
+*.jsonl
