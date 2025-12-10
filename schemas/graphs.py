@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import List, Optional, Literal
+from pathlib import Path
+from typing import Iterable, List, Optional, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator
-from schemas.presence_schema import ContractType
+from schemas.presence_schema import ContractDoc, ContractType, PresenceDefinition, PresenceResult
+from rag.contract_template_chunker import ALL_PRESENCE_DEFINITIONS
 
 
 # =========================
@@ -578,3 +580,121 @@ class ContractGraph(BaseModel):
         if not v:
             raise ValueError("schema_version 不能为空")
         return v
+
+
+# =========================
+# Mermaid 图生成工具
+# =========================
+
+def _format_literal_values(values: tuple[object, ...]) -> str:
+    return " | ".join(str(value) for value in values)
+
+
+def _format_type(annotation: object) -> str:
+    origin = get_origin(annotation)
+    if origin is Union:
+        args = [arg for arg in get_args(annotation)]
+        return " | ".join(_format_type(arg) for arg in args)
+    if origin is list or origin is List:
+        args = get_args(annotation)
+        inner = _format_type(args[0]) if args else "Any"
+        return f"list[{inner}]"
+    if origin is Literal:
+        return _format_literal_values(get_args(annotation))
+    if annotation is None or annotation is type(None):
+        return "None"
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+def _render_enum(enum_cls: type[Enum]) -> list[str]:
+    lines = [f"    class {enum_cls.__name__} {{", "        <<Enumeration>>"]
+    for member_name, member in enum_cls.__members__.items():
+        lines.append(f"        {member_name}: str = '{member.value}'")
+    lines.append("    }")
+    return lines
+
+
+def _render_model(model: type[BaseModel]) -> list[str]:
+    lines = [f"    class {model.__name__} {{"]
+    for field_name, model_field in model.model_fields.items():
+        type_name = _format_type(model_field.annotation)
+        lines.append(f"        {field_name}: {type_name}")
+    lines.append("    }")
+    return lines
+
+
+def build_presence_class_diagram() -> str:
+    lines: list[str] = ["classDiagram"]
+    lines.extend(_render_enum(ContractType))
+
+    for model in (PresenceDefinition, PresenceResult, ContractDoc):
+        lines.extend(_render_model(model))
+
+    lines.append("    ContractDoc \"1\" --> \"*\" PresenceResult : presence_results")
+    lines.append("    PresenceResult --> ContractType : contract_type")
+    lines.append("    PresenceDefinition --> ContractType : contract_type")
+    lines.append(
+        "    PresenceResult ..> PresenceDefinition : presence_id + contract_type"
+    )
+
+    return "\n".join(lines)
+
+
+def _sanitize_mermaid_id(value: str) -> str:
+    return "".join(char if char.isalnum() or char == "_" else "_" for char in value)
+
+
+def build_contract_presence_relationships(
+    definitions: Iterable[PresenceDefinition] = ALL_PRESENCE_DEFINITIONS,
+) -> str:
+    lines = ["flowchart TD"]
+    contract_nodes: dict[ContractType, str] = {}
+
+    for contract_type in ContractType:
+        node_id = f"{_sanitize_mermaid_id(contract_type.value)}_type"
+        contract_nodes[contract_type] = node_id
+        lines.append(f"    {node_id}[{contract_type.value}]")
+
+    rendered_presence_nodes: set[str] = set()
+    for definition in definitions:
+        presence_node = (
+            f"{_sanitize_mermaid_id(definition.contract_type.value)}_"
+            f"{_sanitize_mermaid_id(definition.id)}"
+        )
+        if presence_node not in rendered_presence_nodes:
+            label = f"{definition.label} ({definition.id})"
+            lines.append(f"    {presence_node}([{label}])")
+            rendered_presence_nodes.add(presence_node)
+
+        relation_label = "required" if definition.required else "optional"
+        lines.append(
+            f"    {contract_nodes[definition.contract_type]} -->|{relation_label}| {presence_node}"
+        )
+
+    return "\n".join(lines)
+
+
+def generate_mermaid_file(
+    output_path: Union[str, Path] = Path(__file__).with_name(
+        "contracts_presence_schema.mmd"
+    ),
+) -> Path:
+    output_path = Path(output_path)
+    diagrams = [
+        "```mermaid",
+        build_presence_class_diagram(),
+        "```",
+        "",
+        "```mermaid",
+        build_contract_presence_relationships(),
+        "```",
+    ]
+    output_path.write_text("\n".join(diagrams), encoding="utf-8")
+    print(f"Mermaid diagrams written to {output_path}")
+    return output_path
+
+
+if __name__ == "__main__":
+    generate_mermaid_file()

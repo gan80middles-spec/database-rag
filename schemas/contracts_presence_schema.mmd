@@ -1,0 +1,199 @@
+```mermaid
+classDiagram
+    class ContractType {
+        <<Enumeration>>
+        BUY_SELL: str = 'buy_sell'
+        LEASE: str = 'lease'
+        LABOR: str = 'labor'
+        NDA: str = 'nda'
+        OUTSOURCING: str = 'outsourcing'
+        SOFTWARE: str = 'software'
+    }
+    class PresenceDefinition {
+        id: str
+        label: str
+        required: bool
+        contract_type: ContractType
+        weight: float
+    }
+    class PresenceResult {
+        contract_type: ContractType
+        presence_id: str
+        present: bool
+        required: bool
+        label: str
+        confidence: float | None
+        source_clause_ids: list[str]
+        comment: str | None
+    }
+    class ContractDoc {
+        doc_id: str
+        contract_type: ContractType
+        title: str
+        signed_date: datetime | None
+        presence_results: list[PresenceResult]
+    }
+    ContractDoc "1" --> "*" PresenceResult : presence_results
+    PresenceResult --> ContractType : contract_type
+    PresenceDefinition --> ContractType : contract_type
+    PresenceResult ..> PresenceDefinition : presence_id + contract_type
+
+```
+
+```mermaid
+flowchart TD
+    buy_sell_type[buy_sell]
+    lease_type[lease]
+    labor_type[labor]
+    nda_type[nda]
+    outsourcing_type[outsourcing]
+    software_type[software]
+    buy_sell_party_info([当事人信息（出卖人/买受人） (party_info)])
+    buy_sell_type -->|required| buy_sell_party_info
+    buy_sell_subject([标的物名称/型号 (subject)])
+    buy_sell_type -->|required| buy_sell_subject
+    buy_sell_quantity([数量与计量方式 (quantity)])
+    buy_sell_type -->|required| buy_sell_quantity
+    buy_sell_quality([质量标准/技术规格 (quality)])
+    buy_sell_type -->|required| buy_sell_quality
+    buy_sell_price_payment([价款与结算方式 (price_payment)])
+    buy_sell_type -->|required| buy_sell_price_payment
+    buy_sell_delivery([交付期限/地点/方式 (delivery)])
+    buy_sell_type -->|required| buy_sell_delivery
+    buy_sell_inspection([检验标准与方法/验收 (inspection)])
+    buy_sell_type -->|required| buy_sell_inspection
+    buy_sell_packaging([包装与随附资料 (packaging)])
+    buy_sell_type -->|optional| buy_sell_packaging
+    buy_sell_risk_title_transfer([风险转移/所有权转移 (risk_title_transfer)])
+    buy_sell_type -->|optional| buy_sell_risk_title_transfer
+    buy_sell_after_sales([质保/售后 (after_sales)])
+    buy_sell_type -->|optional| buy_sell_after_sales
+    buy_sell_ip_warranty([知识产权不侵权保证（如适用） (ip_warranty)])
+    buy_sell_type -->|optional| buy_sell_ip_warranty
+    buy_sell_breach_liability([违约责任/损害赔偿 (breach_liability)])
+    buy_sell_type -->|required| buy_sell_breach_liability
+    buy_sell_dispute_resolution([争议解决（适用法/仲裁/法院） (dispute_resolution)])
+    buy_sell_type -->|required| buy_sell_dispute_resolution
+    lease_party_info([出租人/承租人信息 (party_info)])
+    lease_type -->|required| lease_party_info
+    lease_leased_property([租赁物名称/数量/状况 (leased_property)])
+    lease_type -->|required| lease_leased_property
+    lease_purpose([用途与使用限制 (purpose)])
+    lease_type -->|required| lease_purpose
+    lease_term([租赁期限 (term)])
+    lease_type -->|required| lease_term
+    lease_rent_payment([租金及支付期限/方式 (rent_payment)])
+    lease_type -->|required| lease_rent_payment
+    lease_delivery_return([交付/期满返还与原状恢复 (delivery_return)])
+    lease_type -->|required| lease_delivery_return
+    lease_maintenance([维修责任与费用分担 (maintenance)])
+    lease_type -->|required| lease_maintenance
+    lease_deposit([押金/担保（如有） (deposit)])
+    lease_type -->|optional| lease_deposit
+    lease_sublease_assignment([转租/转借/转让限制 (sublease_assignment)])
+    lease_type -->|optional| lease_sublease_assignment
+    lease_risk_liability([风险承担/保险（如适用） (risk_liability)])
+    lease_type -->|optional| lease_risk_liability
+    lease_breach_termination([违约与解除/提前终止 (breach_termination)])
+    lease_type -->|required| lease_breach_termination
+    lease_dispute_resolution([争议解决 (dispute_resolution)])
+    lease_type -->|required| lease_dispute_resolution
+    labor_party_info([用人单位/劳动者信息 (party_info)])
+    labor_type -->|required| labor_party_info
+    labor_term([合同期限/试用期（如有） (term)])
+    labor_type -->|required| labor_term
+    labor_job_and_location([工作内容/岗位与地点 (job_and_location)])
+    labor_type -->|required| labor_job_and_location
+    labor_hours_leave([工作时间/休息休假 (hours_leave)])
+    labor_type -->|required| labor_hours_leave
+    labor_compensation([劳动报酬（工资标准/发放周期） (compensation)])
+    labor_type -->|required| labor_compensation
+    labor_social_insurance([社会保险/公积金约定 (social_insurance)])
+    labor_type -->|required| labor_social_insurance
+    labor_safety_conditions([劳动保护/条件/职业危害防护 (safety_conditions)])
+    labor_type -->|required| labor_safety_conditions
+    labor_training([培训条款（如约定） (training)])
+    labor_type -->|optional| labor_training
+    labor_confidentiality_noncompete([保密/竞业限制（如约定） (confidentiality_noncompete)])
+    labor_type -->|optional| labor_confidentiality_noncompete
+    labor_discipline([劳动纪律/规章制度遵守 (discipline)])
+    labor_type -->|optional| labor_discipline
+    labor_termination([解除/终止与经济补偿 (termination)])
+    labor_type -->|required| labor_termination
+    labor_dispute_resolution([争议解决（仲裁/诉讼） (dispute_resolution)])
+    labor_type -->|required| labor_dispute_resolution
+    nda_party_info([当事人信息 (party_info)])
+    nda_type -->|required| nda_party_info
+    nda_confidential_definition([保密信息的范围/定义 (confidential_definition)])
+    nda_type -->|required| nda_confidential_definition
+    nda_use_scope([使用范围/目的限制 (use_scope)])
+    nda_type -->|required| nda_use_scope
+    nda_exceptions([保密义务例外（公开/已知/独立获得等） (exceptions)])
+    nda_type -->|required| nda_exceptions
+    nda_security_measures([安全措施/访问控制 (security_measures)])
+    nda_type -->|optional| nda_security_measures
+    nda_term_duration([保密期限/存续期 (term_duration)])
+    nda_type -->|required| nda_term_duration
+    nda_return_destroy([资料返还/销毁 (return_destroy)])
+    nda_type -->|required| nda_return_destroy
+    nda_third_party([第三方披露与传递限制 (third_party)])
+    nda_type -->|optional| nda_third_party
+    nda_ip_ownership([知识产权归属与不授予条款 (ip_ownership)])
+    nda_type -->|optional| nda_ip_ownership
+    nda_breach_remedy([违约责任/禁令救济/损害赔偿 (breach_remedy)])
+    nda_type -->|required| nda_breach_remedy
+    nda_dispute_resolution([争议解决 (dispute_resolution)])
+    nda_type -->|required| nda_dispute_resolution
+    outsourcing_party_info([委托方/服务方信息 (party_info)])
+    outsourcing_type -->|required| outsourcing_party_info
+    outsourcing_scope_deliverables([工作范围/交付成果与规格 (scope_deliverables)])
+    outsourcing_type -->|required| outsourcing_scope_deliverables
+    outsourcing_timeline_milestones([进度/里程碑/服务期限 (timeline_milestones)])
+    outsourcing_type -->|required| outsourcing_timeline_milestones
+    outsourcing_acceptance([验收标准与流程 (acceptance)])
+    outsourcing_type -->|required| outsourcing_acceptance
+    outsourcing_fees_settlement([费用/结算/发票 (fees_settlement)])
+    outsourcing_type -->|required| outsourcing_fees_settlement
+    outsourcing_change_control([变更管理（需求/范围/价格） (change_control)])
+    outsourcing_type -->|optional| outsourcing_change_control
+    outsourcing_materials_ip([资料/工具/知识产权归属与许可 (materials_ip)])
+    outsourcing_type -->|required| outsourcing_materials_ip
+    outsourcing_confidentiality([保密义务/数据合规 (confidentiality)])
+    outsourcing_type -->|required| outsourcing_confidentiality
+    outsourcing_warranty_support([质量保证/维护支持（如有） (warranty_support)])
+    outsourcing_type -->|optional| outsourcing_warranty_support
+    outsourcing_subcontracting([分包/人员更替限制 (subcontracting)])
+    outsourcing_type -->|optional| outsourcing_subcontracting
+    outsourcing_breach_liability([违约责任/赔偿/限责 (breach_liability)])
+    outsourcing_type -->|required| outsourcing_breach_liability
+    outsourcing_termination([解除/终止与费用清算 (termination)])
+    outsourcing_type -->|required| outsourcing_termination
+    outsourcing_dispute_resolution([争议解决 (dispute_resolution)])
+    outsourcing_type -->|required| outsourcing_dispute_resolution
+    software_party_info([许可方/被许可方信息 (party_info)])
+    software_type -->|required| software_party_info
+    software_license_grant([许可范围（地域/期限/方式/是否独占） (license_grant)])
+    software_type -->|required| software_license_grant
+    software_usage_restrictions([使用限制（并发/终端/不得反向工程等） (usage_restrictions)])
+    software_type -->|required| software_usage_restrictions
+    software_delivery_support([交付方式/安装部署/技术支持 (delivery_support)])
+    software_type -->|optional| software_delivery_support
+    software_updates_maintenance([升级/维护/服务级别（SLA） (updates_maintenance)])
+    software_type -->|optional| software_updates_maintenance
+    software_fees_audit([费用/计费方式/审计权 (fees_audit)])
+    software_type -->|required| software_fees_audit
+    software_ip_ownership([知识产权归属与不授予条款 (ip_ownership)])
+    software_type -->|required| software_ip_ownership
+    software_data_protection([数据安全/个人信息/接口调用合规 (data_protection)])
+    software_type -->|optional| software_data_protection
+    software_oss_thirdparty([开源与第三方组件约束（如适用） (oss_thirdparty)])
+    software_type -->|optional| software_oss_thirdparty
+    software_infringement_indemnity([侵权担保与赔偿 (infringement_indemnity)])
+    software_type -->|required| software_infringement_indemnity
+    software_restricted_clauses_compliance([技术合同限制性条款合规（民法典864） (restricted_clauses_compliance)])
+    software_type -->|required| software_restricted_clauses_compliance
+    software_termination([终止/到期后的处置（停用/反回/销毁） (termination)])
+    software_type -->|required| software_termination
+    software_dispute_resolution([争议解决 (dispute_resolution)])
+    software_type -->|required| software_dispute_resolution
+```
