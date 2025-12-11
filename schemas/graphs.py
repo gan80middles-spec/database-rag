@@ -494,29 +494,42 @@ class ContractClause(BaseModel):
     remedies: List[ContractRemedy] = Field(default_factory=list)
 
 
+class PresenceItem(BaseModel):
+    """
+    合同要素覆盖情况的单项。
+    对应 PRESENCE_SCHEMAS[contract_type] 里的一个条目。
+    """
+
+    id: str
+    label: str
+    required: bool = False
+    present: bool = False
+    source_clause_ids: List[str] = Field(
+        default_factory=list,
+        description="标记该要素来源的条款ID列表",
+    )
+
+
 class ContractPresenceSummary(BaseModel):
     """
-    合同要素覆盖情况（以劳动合同为主做 v1）
-    不同 contract_type 可以择用不同字段，但统一放在这个对象里。
+    合同要素覆盖情况（通用版）。
+
+    不同 contract_type 对应不同 schema（见 PRESENCE_SCHEMAS 配置），
+    这里存的是“实际检测结果”，而不是 schema 定义本身。
     """
     model_config = ConfigDict(
         from_attributes=True,
         str_strip_whitespace=True,
     )
 
-    has_party_info: bool = False
-    has_term: bool = False
-    has_work_content: bool = False
-    has_work_place: bool = False
-    has_work_time_and_rest: bool = False
-    has_salary_and_payment: bool = False
-    has_social_insurance: bool = False
-    has_labor_protection: bool = False
-    has_confidentiality: bool = False
-    has_non_compete: bool = False
-    has_ip_ownership: bool = False
-    has_dispute_resolution: bool = False
-    has_termination_conditions: bool = False
+    contract_type: ContractType = Field(
+        default=ContractType.OTHER,
+        description="合同类型，决定 PRESENCE_SCHEMAS 的选择",
+    )
+    items: List[PresenceItem] = Field(
+        default_factory=list,
+        description="按 PRESENCE_SCHEMAS 顺序生成的要素覆盖列表",
+    )
 
 
 class ContractRisk(BaseModel):
@@ -575,8 +588,9 @@ class ContractGraph(BaseModel):
     definitions: List[ContractDefinition] = Field(default_factory=list)
     clauses: List[ContractClause] = Field(default_factory=list)
 
-    presence_summary: ContractPresenceSummary = Field(
-        default_factory=ContractPresenceSummary
+    presence_summary: Optional[ContractPresenceSummary] = Field(
+        default=None,
+        description="合同要素覆盖情况（按合同类型的 PRESENCE_SCHEMAS 配置生成）",
     )
 
     risks: List[ContractRisk] = Field(default_factory=list)
