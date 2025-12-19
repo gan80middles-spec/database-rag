@@ -1,0 +1,714 @@
+{
+  "$defs": {
+    "CaseClaim": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "claimant_id": {
+          "title": "Claimant Id",
+          "type": "string"
+        },
+        "respondent_id": {
+          "title": "Respondent Id",
+          "type": "string"
+        },
+        "type": {
+          "description": "请求类型，如支付借款本息/支付劳动报酬",
+          "title": "Type",
+          "type": "string"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "请求金额",
+          "title": "Amount"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "CNY",
+          "title": "Currency"
+        },
+        "other_demands": {
+          "description": "其他请求事项",
+          "items": {
+            "type": "string"
+          },
+          "title": "Other Demands",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "claimant_id",
+        "respondent_id",
+        "type"
+      ],
+      "title": "CaseClaim",
+      "type": "object"
+    },
+    "CaseEvidence": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/EvidenceType"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "strength": {
+          "$ref": "#/$defs/StrengthLevel",
+          "default": "medium"
+        },
+        "is_disputed": {
+          "default": false,
+          "title": "Is Disputed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "description"
+      ],
+      "title": "CaseEvidence",
+      "type": "object"
+    },
+    "CaseFact": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "time": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "时间，ISO 日期",
+          "title": "Time"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "enum": [
+                "pre_litigation",
+                "during_litigation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "pre_litigation",
+          "title": "Stage"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "CaseFact",
+      "type": "object"
+    },
+    "CaseMeta": {
+      "properties": {
+        "jurisdiction": {
+          "$ref": "#/$defs/Jurisdiction",
+          "default": "CN",
+          "description": "法域"
+        },
+        "court": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "法院名称，可空（咨询阶段）",
+          "title": "Court"
+        },
+        "case_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "案件类型/案由简写",
+          "title": "Case Type"
+        },
+        "procedure_stage": {
+          "$ref": "#/$defs/CaseProcedureStage",
+          "default": "consultation",
+          "description": "程序阶段"
+        },
+        "cause": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "案由全称",
+          "title": "Cause"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "创建时间（ISO 8601 字符串）",
+          "title": "Created At"
+        },
+        "user_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "用户ID",
+          "title": "User Id"
+        },
+        "language": {
+          "default": "zh-CN",
+          "description": "语言代码",
+          "title": "Language",
+          "type": "string"
+        }
+      },
+      "title": "CaseMeta",
+      "type": "object"
+    },
+    "CaseParty": {
+      "properties": {
+        "id": {
+          "description": "当事人ID，如 P1/P2",
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "description": "原告/被告/申请人等，保持原文",
+          "title": "Role",
+          "type": "string"
+        },
+        "name": {
+          "description": "当事人姓名/名称",
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/PartyType",
+          "description": "当事人类型"
+        },
+        "attributes": {
+          "description": "一些布尔属性，如 is_employer/is_employee/is_lender 等",
+          "title": "Attributes",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "name",
+        "type"
+      ],
+      "title": "CaseParty",
+      "type": "object"
+    },
+    "CaseProcedureStage": {
+      "enum": [
+        "consultation",
+        "first_instance",
+        "second_instance",
+        "retrial"
+      ],
+      "title": "CaseProcedureStage",
+      "type": "string"
+    },
+    "CaseRelationship": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/RelationshipType"
+        },
+        "from_party_id": {
+          "title": "From Party Id",
+          "type": "string"
+        },
+        "to_party_id": {
+          "title": "To Party Id",
+          "type": "string"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "关系起始时间",
+          "title": "Since"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "关系结束时间",
+          "title": "Until"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "补充说明",
+          "title": "Description"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "from_party_id",
+        "to_party_id"
+      ],
+      "title": "CaseRelationship",
+      "type": "object"
+    },
+    "CaseSourceType": {
+      "enum": [
+        "user_query",
+        "judgment",
+        "mixed"
+      ],
+      "title": "CaseSourceType",
+      "type": "string"
+    },
+    "CaseTimelineItem": {
+      "properties": {
+        "time": {
+          "title": "Time",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "fact_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Fact Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "time",
+        "label"
+      ],
+      "title": "CaseTimelineItem",
+      "type": "object"
+    },
+    "EvidenceType": {
+      "enum": [
+        "bank_record",
+        "IOU",
+        "chat_log",
+        "labor_contract",
+        "witness_testimony",
+        "audio_video",
+        "other"
+      ],
+      "title": "EvidenceType",
+      "type": "string"
+    },
+    "Jurisdiction": {
+      "enum": [
+        "CN",
+        "JP",
+        "OTHER"
+      ],
+      "title": "Jurisdiction",
+      "type": "string"
+    },
+    "LawCandidate": {
+      "properties": {
+        "doc_type": {
+          "$ref": "#/$defs/LawDocType"
+        },
+        "law_name": {
+          "title": "Law Name",
+          "type": "string"
+        },
+        "law_doc_id": {
+          "description": "对应 law_kb_docs 中的ID",
+          "title": "Law Doc Id",
+          "type": "string"
+        },
+        "article_no": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "具体条号，如 第680条",
+          "title": "Article No"
+        },
+        "article_range": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "范围，如 680-682",
+          "title": "Article Range"
+        },
+        "confidence": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "doc_type",
+        "law_name",
+        "law_doc_id"
+      ],
+      "title": "LawCandidate",
+      "type": "object"
+    },
+    "LawDocType": {
+      "enum": [
+        "statute",
+        "judicial_interpretation"
+      ],
+      "title": "LawDocType",
+      "type": "string"
+    },
+    "LegalIssue": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "issue": {
+          "description": "争点问题描述",
+          "title": "Issue",
+          "type": "string"
+        },
+        "focus": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "争点聚焦点",
+          "title": "Focus"
+        },
+        "priority": {
+          "$ref": "#/$defs/PriorityLevel",
+          "default": "medium"
+        }
+      },
+      "required": [
+        "id",
+        "issue"
+      ],
+      "title": "LegalIssue",
+      "type": "object"
+    },
+    "PartyType": {
+      "enum": [
+        "natural_person",
+        "company",
+        "government",
+        "other"
+      ],
+      "title": "PartyType",
+      "type": "string"
+    },
+    "PriorityLevel": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "PriorityLevel",
+      "type": "string"
+    },
+    "RelationshipType": {
+      "enum": [
+        "loan",
+        "labor",
+        "lease",
+        "sale",
+        "marriage",
+        "tort",
+        "other"
+      ],
+      "title": "RelationshipType",
+      "type": "string"
+    },
+    "SimilarJudgment": {
+      "properties": {
+        "judgment_id": {
+          "description": "文书ID，关联 law_kb_docs",
+          "title": "Judgment Id",
+          "type": "string"
+        },
+        "similarity": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Similarity",
+          "type": "number"
+        },
+        "court": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Court"
+        },
+        "judgment_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judgment Date"
+        },
+        "result_brief": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Brief"
+        }
+      },
+      "required": [
+        "judgment_id",
+        "similarity"
+      ],
+      "title": "SimilarJudgment",
+      "type": "object"
+    },
+    "StrengthLevel": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "StrengthLevel",
+      "type": "string"
+    }
+  },
+  "description": "案情图谱：CaseGraph",
+  "properties": {
+    "case_id": {
+      "description": "内部唯一案件ID",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "0.1.0",
+      "description": "schema 版本号",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_type": {
+      "$ref": "#/$defs/CaseSourceType",
+      "default": "user_query",
+      "description": "来源：用户案情/裁判文书/混合"
+    },
+    "raw_text": {
+      "description": "原始案情描述或整理后案情",
+      "title": "Raw Text",
+      "type": "string"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "案情摘要（200-400字）",
+      "title": "Summary"
+    },
+    "meta": {
+      "$ref": "#/$defs/CaseMeta"
+    },
+    "parties": {
+      "items": {
+        "$ref": "#/$defs/CaseParty"
+      },
+      "title": "Parties",
+      "type": "array"
+    },
+    "relationships": {
+      "items": {
+        "$ref": "#/$defs/CaseRelationship"
+      },
+      "title": "Relationships",
+      "type": "array"
+    },
+    "claims": {
+      "items": {
+        "$ref": "#/$defs/CaseClaim"
+      },
+      "title": "Claims",
+      "type": "array"
+    },
+    "facts": {
+      "items": {
+        "$ref": "#/$defs/CaseFact"
+      },
+      "title": "Facts",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/CaseEvidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "legal_issues": {
+      "items": {
+        "$ref": "#/$defs/LegalIssue"
+      },
+      "title": "Legal Issues",
+      "type": "array"
+    },
+    "law_candidates": {
+      "items": {
+        "$ref": "#/$defs/LawCandidate"
+      },
+      "title": "Law Candidates",
+      "type": "array"
+    },
+    "similar_judgments": {
+      "items": {
+        "$ref": "#/$defs/SimilarJudgment"
+      },
+      "title": "Similar Judgments",
+      "type": "array"
+    },
+    "timeline": {
+      "items": {
+        "$ref": "#/$defs/CaseTimelineItem"
+      },
+      "title": "Timeline",
+      "type": "array"
+    }
+  },
+  "required": [
+    "case_id",
+    "raw_text"
+  ],
+  "title": "CaseGraph",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

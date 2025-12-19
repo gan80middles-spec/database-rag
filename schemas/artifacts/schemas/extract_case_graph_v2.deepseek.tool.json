@@ -1,0 +1,280 @@
+{
+  "type": "function",
+  "function": {
+    "name": "extract_case_graph_v2",
+    "description": "Extract a structured CaseGraph from Chinese legal text (judgment/complaint/contract dispute). NEVER include raw full text. Fill missing fields with sentinel values.",
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "schema_version",
+        "source_type",
+        "doc_ref",
+        "text_digest",
+        "summary",
+        "meta",
+        "parties",
+        "relationships",
+        "claims",
+        "facts",
+        "evidence",
+        "legal_issues",
+        "law_candidates",
+        "similar_judgments",
+        "timeline",
+        "warnings"
+      ],
+      "properties": {
+        "case_id": { "type": "string" },
+        "schema_version": { "type": "string" },
+        "source_type": {
+          "type": "string",
+          "enum": ["judgment", "user_query", "mixed", "unknown"]
+        },
+
+        "doc_ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["doc_id", "doc_type", "chunk_ids"],
+          "properties": {
+            "doc_id": { "type": "string" },
+            "doc_type": { "type": "string", "enum": ["judgment", "statute", "judicial_interpretation", "contract", "faq", "unknown"] },
+            "chunk_ids": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        },
+
+        "text_digest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["text_len", "sha1", "head_200", "tail_200"],
+          "properties": {
+            "text_len": { "type": "number" },
+            "sha1": { "type": "string" },
+            "head_200": { "type": "string" },
+            "tail_200": { "type": "string" }
+          }
+        },
+
+        "summary": { "type": "string" },
+
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jurisdiction", "court", "case_no", "judgment_date", "cause", "procedure_stage", "language"],
+          "properties": {
+            "jurisdiction": { "type": "string", "enum": ["CN", "US", "EU", "OTHER", "unknown"] },
+            "court": { "type": "string" },
+            "case_no": { "type": "string" },
+            "judgment_date": { "type": "string" },
+            "cause": { "type": "string" },
+            "procedure_stage": { "type": "string", "enum": ["first_instance", "second_instance", "retrial", "enforcement", "unknown"] },
+            "language": { "type": "string", "enum": ["zh", "en", "unknown"] }
+          }
+        },
+
+        "parties": {
+          "type": "array",
+          "items": { "$ref": "#/$def/CaseParty" }
+        },
+        "relationships": {
+          "type": "array",
+          "items": { "$ref": "#/$def/CaseRelationship" }
+        },
+        "claims": {
+          "type": "array",
+          "items": { "$ref": "#/$def/CaseClaim" }
+        },
+        "facts": {
+          "type": "array",
+          "items": { "$ref": "#/$def/CaseFact" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$def/CaseEvidence" }
+        },
+        "legal_issues": {
+          "type": "array",
+          "items": { "$ref": "#/$def/LegalIssue" }
+        },
+        "law_candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$def/LawCandidate" }
+        },
+        "similar_judgments": {
+          "type": "array",
+          "items": { "$ref": "#/$def/SimilarJudgment" }
+        },
+        "timeline": {
+          "type": "array",
+          "items": { "$ref": "#/$def/CaseTimelineItem" }
+        },
+
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+
+      "$def": {
+        "AttributeKV": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["k", "v"],
+          "properties": {
+            "k": { "type": "string" },
+            "v": { "type": "string" }
+          }
+        },
+
+        "CaseParty": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "role", "name", "party_type", "tags", "attributes_kv", "start_anchor", "end_anchor"],
+          "properties": {
+            "id": { "type": "string" },
+            "role": { "type": "string", "enum": ["plaintiff", "defendant", "third_party", "agent", "court", "unknown"] },
+            "name": { "type": "string" },
+            "party_type": { "type": "string", "enum": ["individual", "company", "government", "organization", "unknown"] },
+            "tags": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "attributes_kv": {
+              "type": "array",
+              "items": { "$ref": "#/$def/AttributeKV" }
+            },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "CaseRelationship": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "from_party_id", "to_party_id", "since", "until", "description", "start_anchor", "end_anchor"],
+          "properties": {
+            "id": { "type": "string" },
+            "type": {
+              "type": "string",
+              "enum": ["employment", "sale", "lease", "loan", "outsourcing", "software", "nda", "agency", "other", "unknown"]
+            },
+            "from_party_id": { "type": "string" },
+            "to_party_id": { "type": "string" },
+            "since": { "type": "string" },
+            "until": { "type": "string" },
+            "description": { "type": "string" },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "CaseClaim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "claimant_id", "respondent_id", "claim_type", "amount", "currency", "other_demands", "start_anchor", "end_anchor"],
+          "properties": {
+            "id": { "type": "string" },
+            "claimant_id": { "type": "string" },
+            "respondent_id": { "type": "string" },
+            "claim_type": { "type": "string", "enum": ["payment", "refund", "damages", "liquidated_damages", "performance", "termination", "other", "unknown"] },
+            "amount": { "type": "number" },
+            "currency": { "type": "string" },
+            "other_demands": { "type": "array", "items": { "type": "string" } },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "CaseFact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "time", "stage", "description", "evidence_ids", "start_anchor", "end_anchor"],
+          "properties": {
+            "id": { "type": "string" },
+            "time": { "type": "string" },
+            "stage": { "type": "string", "enum": ["pre_contract", "contracting", "performance", "breach", "litigation", "enforcement", "unknown"] },
+            "description": { "type": "string" },
+            "evidence_ids": { "type": "array", "items": { "type": "string" } },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "CaseEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "evidence_type", "description", "strength", "is_disputed", "start_anchor", "end_anchor"],
+          "properties": {
+            "id": { "type": "string" },
+            "evidence_type": { "type": "string", "enum": ["contract", "invoice", "receipt", "chat", "email", "delivery", "witness", "expert", "other", "unknown"] },
+            "description": { "type": "string" },
+            "strength": { "type": "string", "enum": ["high", "medium", "low", "unknown"] },
+            "is_disputed": { "type": "boolean" },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "LegalIssue": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "question", "conclusion", "reasoning", "related_fact_ids", "related_claim_ids", "start_anchor", "end_anchor"],
+          "properties": {
+            "id": { "type": "string" },
+            "question": { "type": "string" },
+            "conclusion": { "type": "string" },
+            "reasoning": { "type": "string" },
+            "related_fact_ids": { "type": "array", "items": { "type": "string" } },
+            "related_claim_ids": { "type": "array", "items": { "type": "string" } },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "LawCandidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["law_name", "article", "relevance", "reasoning", "start_anchor", "end_anchor"],
+          "properties": {
+            "law_name": { "type": "string" },
+            "article": { "type": "string" },
+            "relevance": { "type": "number" },
+            "reasoning": { "type": "string" },
+            "start_anchor": { "type": "string" },
+            "end_anchor": { "type": "string" }
+          }
+        },
+
+        "SimilarJudgment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["judgment_id", "similarity", "court", "judgment_date", "result_brief"],
+          "properties": {
+            "judgment_id": { "type": "string" },
+            "similarity": { "type": "number" },
+            "court": { "type": "string" },
+            "judgment_date": { "type": "string" },
+            "result_brief": { "type": "string" }
+          }
+        },
+
+        "CaseTimelineItem": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["time", "event", "related_fact_ids", "related_party_ids"],
+          "properties": {
+            "time": { "type": "string" },
+            "event": { "type": "string" },
+            "related_fact_ids": { "type": "array", "items": { "type": "string" } },
+            "related_party_ids": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

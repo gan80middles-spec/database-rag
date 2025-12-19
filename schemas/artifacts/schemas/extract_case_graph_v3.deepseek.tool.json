@@ -1,0 +1,216 @@
+{
+  "type": "function",
+  "function": {
+    "name": "extract_case_graph_v2",
+    "description": "Extract CaseGraph (without raw_text; raw_text will be filled locally).",
+    "strict": false,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "schema_version",
+        "source_type",
+        "summary",
+        "meta",
+        "parties",
+        "relationships",
+        "claims",
+        "facts",
+        "evidence",
+        "legal_issues",
+        "law_candidates",
+        "similar_judgments",
+        "timeline"
+      ],
+      "properties": {
+        "case_id": { "type": "string" },
+        "schema_version": { "type": "string" },
+        "source_type": { "type": "string", "enum": ["user_query", "judgment", "mixed"] },
+        "summary": { "type": ["string", "null"] },
+
+        "meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["jurisdiction", "procedure_stage", "language"],
+          "properties": {
+            "jurisdiction": { "type": "string", "enum": ["CN", "JP", "OTHER"] },
+            "court": { "type": ["string", "null"] },
+            "case_type": { "type": ["string", "null"] },
+            "procedure_stage": {
+              "type": "string",
+              "enum": ["consultation", "first_instance", "second_instance", "retrial"]
+            },
+            "cause": { "type": ["string", "null"] },
+            "created_at": { "type": ["string", "null"] },
+            "user_id": { "type": ["string", "null"] },
+            "language": { "type": "string" }
+          }
+        },
+
+        "parties": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "role", "name", "type", "attributes"],
+            "properties": {
+              "id": { "type": "string" },
+              "role": { "type": "string" },
+              "name": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["natural_person", "company", "government", "other"]
+              },
+              "attributes": { "type": "object" }
+            }
+          }
+        },
+
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "type", "from_party_id", "to_party_id", "since", "until", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["loan", "labor", "lease", "sale", "marriage", "tort", "other"]
+              },
+              "from_party_id": { "type": "string" },
+              "to_party_id": { "type": "string" },
+              "since": { "type": ["string", "null"] },
+              "until": { "type": ["string", "null"] },
+              "description": { "type": ["string", "null"] }
+            }
+          }
+        },
+
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "claimant_id", "respondent_id", "type", "amount", "currency", "other_demands"],
+            "properties": {
+              "id": { "type": "string" },
+              "claimant_id": { "type": "string" },
+              "respondent_id": { "type": "string" },
+              "type": { "type": "string" },
+              "amount": { "type": ["number", "null"] },
+              "currency": { "type": ["string", "null"] },
+              "other_demands": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+
+        "facts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "time", "stage", "description", "evidence_ids"],
+            "properties": {
+              "id": { "type": "string" },
+              "time": { "type": ["string", "null"] },
+              "stage": { "type": ["string", "null"], "enum": ["pre_litigation", "during_litigation", null] },
+              "description": { "type": "string" },
+              "evidence_ids": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "type", "description", "strength", "is_disputed"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "bank_record",
+                  "IOU",
+                  "chat_log",
+                  "labor_contract",
+                  "witness_testimony",
+                  "audio_video",
+                  "other"
+                ]
+              },
+              "description": { "type": "string" },
+              "strength": { "type": "string", "enum": ["low", "medium", "high"] },
+              "is_disputed": { "type": "boolean" }
+            }
+          }
+        },
+
+        "legal_issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "issue", "focus", "priority"],
+            "properties": {
+              "id": { "type": "string" },
+              "issue": { "type": "string" },
+              "focus": { "type": ["string", "null"] },
+              "priority": { "type": "string", "enum": ["high", "medium", "low"] }
+            }
+          }
+        },
+
+        "law_candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["doc_type", "law_name", "law_doc_id", "article_no", "article_range", "confidence"],
+            "properties": {
+              "doc_type": { "type": "string", "enum": ["statute", "judicial_interpretation"] },
+              "law_name": { "type": "string" },
+              "law_doc_id": { "type": "string" },
+              "article_no": { "type": ["string", "null"] },
+              "article_range": { "type": ["string", "null"] },
+              "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+            }
+          }
+        },
+
+        "similar_judgments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["judgment_id", "similarity", "court", "judgment_date", "result_brief"],
+            "properties": {
+              "judgment_id": { "type": "string" },
+              "similarity": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+              "court": { "type": ["string", "null"] },
+              "judgment_date": { "type": ["string", "null"] },
+              "result_brief": { "type": ["string", "null"] }
+            }
+          }
+        },
+
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["time", "label", "fact_ids"],
+            "properties": {
+              "time": { "type": "string" },
+              "label": { "type": "string" },
+              "fact_ids": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    }
+  }
+}

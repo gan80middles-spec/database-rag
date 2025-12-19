@@ -1,0 +1,917 @@
+{
+  "$defs": {
+    "ConditionType": {
+      "enum": [
+        "suspensive",
+        "resolutory"
+      ],
+      "title": "ConditionType",
+      "type": "string"
+    },
+    "ContractAttachment": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "附件类型，如 job_description 等",
+          "title": "Type"
+        },
+        "related_clause_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Related Clause Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "title": "ContractAttachment",
+      "type": "object"
+    },
+    "ContractClause": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "clause_no": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "条号，如 第一条",
+          "title": "Clause No"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "小标题",
+          "title": "Title"
+        },
+        "category": {
+          "$ref": "#/$defs/ContractClauseCategory",
+          "default": "other"
+        },
+        "text": {
+          "description": "条款原文",
+          "title": "Text",
+          "type": "string"
+        },
+        "ref_laws": {
+          "items": {
+            "$ref": "#/$defs/ContractRefLaw"
+          },
+          "title": "Ref Laws",
+          "type": "array"
+        },
+        "obligations": {
+          "items": {
+            "$ref": "#/$defs/ContractObligation"
+          },
+          "title": "Obligations",
+          "type": "array"
+        },
+        "rights": {
+          "items": {
+            "$ref": "#/$defs/ContractRight"
+          },
+          "title": "Rights",
+          "type": "array"
+        },
+        "conditions": {
+          "items": {
+            "$ref": "#/$defs/ContractCondition"
+          },
+          "title": "Conditions",
+          "type": "array"
+        },
+        "remedies": {
+          "items": {
+            "$ref": "#/$defs/ContractRemedy"
+          },
+          "title": "Remedies",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "title": "ContractClause",
+      "type": "object"
+    },
+    "ContractClauseCategory": {
+      "enum": [
+        "definition",
+        "scope",
+        "payment",
+        "term",
+        "termination",
+        "liability",
+        "confidentiality",
+        "ip",
+        "dispute_resolution",
+        "labor_protection",
+        "work_time",
+        "social_insurance",
+        "other"
+      ],
+      "title": "ContractClauseCategory",
+      "type": "string"
+    },
+    "ContractCondition": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/ConditionType"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "description"
+      ],
+      "title": "ContractCondition",
+      "type": "object"
+    },
+    "ContractContact": {
+      "properties": {
+        "person": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Person"
+        },
+        "phone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phone"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Email"
+        }
+      },
+      "title": "ContractContact",
+      "type": "object"
+    },
+    "ContractDefinition": {
+      "properties": {
+        "term": {
+          "description": "术语名",
+          "title": "Term",
+          "type": "string"
+        },
+        "definition_text": {
+          "description": "定义内容",
+          "title": "Definition Text",
+          "type": "string"
+        },
+        "source_clause_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "来源条款ID",
+          "title": "Source Clause Id"
+        }
+      },
+      "required": [
+        "term",
+        "definition_text"
+      ],
+      "title": "ContractDefinition",
+      "type": "object"
+    },
+    "ContractMeta": {
+      "properties": {
+        "contract_type": {
+          "$ref": "#/$defs/ContractType"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "合同标题",
+          "title": "Title"
+        },
+        "signed_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "签署日期",
+          "title": "Signed Date"
+        },
+        "effective_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "生效日期",
+          "title": "Effective Date"
+        },
+        "termination_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "终止日期",
+          "title": "Termination Date"
+        },
+        "governing_law": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "中华人民共和国法律",
+          "description": "适用法律",
+          "title": "Governing Law"
+        },
+        "jurisdiction": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "争议解决管辖法院/仲裁机构",
+          "title": "Jurisdiction"
+        },
+        "language": {
+          "default": "zh-CN",
+          "title": "Language",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "source": {
+          "$ref": "#/$defs/ContractSource",
+          "default": "template"
+        }
+      },
+      "required": [
+        "contract_type"
+      ],
+      "title": "ContractMeta",
+      "type": "object"
+    },
+    "ContractObligation": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "from_party_id": {
+          "title": "From Party Id",
+          "type": "string"
+        },
+        "to_party_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To Party Id"
+        },
+        "type": {
+          "$ref": "#/$defs/ObligationType",
+          "default": "other"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amount"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "CNY",
+          "title": "Currency"
+        },
+        "frequency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "频率，如 monthly/once",
+          "title": "Frequency"
+        },
+        "due_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Due Date"
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "履行条件",
+          "title": "Condition"
+        }
+      },
+      "required": [
+        "id",
+        "from_party_id",
+        "description"
+      ],
+      "title": "ContractObligation",
+      "type": "object"
+    },
+    "ContractParty": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "description": "甲方/乙方/用人单位/劳动者 等",
+          "title": "Role",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/PartyType"
+        },
+        "registration_no": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registration No"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "contact": {
+          "$ref": "#/$defs/ContractContact"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "name",
+        "type"
+      ],
+      "title": "ContractParty",
+      "type": "object"
+    },
+    "ContractPresenceSummary": {
+      "description": "合同要素覆盖情况（通用版）。\n\n不同 contract_type 对应不同 schema（见 PRESENCE_SCHEMAS 配置），\n这里存的是“实际检测结果”，而不是 schema 定义本身。",
+      "properties": {
+        "contract_type": {
+          "$ref": "#/$defs/ContractType",
+          "default": "other",
+          "description": "合同类型，决定 PRESENCE_SCHEMAS 的选择"
+        },
+        "items": {
+          "description": "按 PRESENCE_SCHEMAS 顺序生成的要素覆盖列表",
+          "items": {
+            "$ref": "#/$defs/PresenceItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "title": "ContractPresenceSummary",
+      "type": "object"
+    },
+    "ContractRefLaw": {
+      "properties": {
+        "law_doc_id": {
+          "title": "Law Doc Id",
+          "type": "string"
+        },
+        "law_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Law Name"
+        },
+        "article_no": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Article No"
+        },
+        "article_range": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Article Range"
+        }
+      },
+      "required": [
+        "law_doc_id"
+      ],
+      "title": "ContractRefLaw",
+      "type": "object"
+    },
+    "ContractRemedy": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/RemedyType"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amount"
+        },
+        "multiplier": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "倍数，如违约金为月工资3倍则为3.0",
+          "title": "Multiplier"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "description"
+      ],
+      "title": "ContractRemedy",
+      "type": "object"
+    },
+    "ContractRight": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "party_id": {
+          "title": "Party Id",
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/RightType",
+          "default": "other"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "party_id",
+        "description"
+      ],
+      "title": "ContractRight",
+      "type": "object"
+    },
+    "ContractRisk": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "source_clause_ids": {
+          "description": "触发该风险的条款ID列表",
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Clause Ids",
+          "type": "array"
+        },
+        "risk_type": {
+          "$ref": "#/$defs/RiskType",
+          "default": "other"
+        },
+        "severity": {
+          "$ref": "#/$defs/RiskSeverity",
+          "default": "medium"
+        },
+        "description": {
+          "description": "风险描述，面向律师/用户",
+          "title": "Description",
+          "type": "string"
+        },
+        "rule_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "命中的规则ID（对接规则引擎）",
+          "title": "Rule Id"
+        },
+        "ref_laws": {
+          "description": "与该风险相关的法律条文引用",
+          "items": {
+            "$ref": "#/$defs/ContractRefLaw"
+          },
+          "title": "Ref Laws",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "ContractRisk",
+      "type": "object"
+    },
+    "ContractSource": {
+      "enum": [
+        "template",
+        "real_case",
+        "uploaded"
+      ],
+      "title": "ContractSource",
+      "type": "string"
+    },
+    "ContractType": {
+      "enum": [
+        "labor",
+        "lease",
+        "nda",
+        "software",
+        "outsourcing",
+        "buy_sell",
+        "service",
+        "other"
+      ],
+      "title": "ContractType",
+      "type": "string"
+    },
+    "ObligationType": {
+      "enum": [
+        "pay_salary",
+        "deliver_goods",
+        "provide_service",
+        "keep_confidential",
+        "non_compete",
+        "other"
+      ],
+      "title": "ObligationType",
+      "type": "string"
+    },
+    "PartyType": {
+      "enum": [
+        "natural_person",
+        "company",
+        "government",
+        "other"
+      ],
+      "title": "PartyType",
+      "type": "string"
+    },
+    "PresenceItem": {
+      "description": "合同要素覆盖情况的单项。\n对应 PRESENCE_SCHEMAS[contract_type] 里的一个条目。",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "present": {
+          "default": false,
+          "title": "Present",
+          "type": "boolean"
+        },
+        "source_clause_ids": {
+          "description": "标记该要素来源的条款ID列表",
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Clause Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "PresenceItem",
+      "type": "object"
+    },
+    "RemedyType": {
+      "enum": [
+        "liquidated_damages",
+        "penalty",
+        "indemnity",
+        "other"
+      ],
+      "title": "RemedyType",
+      "type": "string"
+    },
+    "RightType": {
+      "enum": [
+        "terminate",
+        "inspect",
+        "use_ip",
+        "withhold_payment",
+        "other"
+      ],
+      "title": "RightType",
+      "type": "string"
+    },
+    "RiskSeverity": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "RiskSeverity",
+      "type": "string"
+    },
+    "RiskType": {
+      "enum": [
+        "unilateral_termination",
+        "high_liquidated_damages",
+        "waiver_of_rights",
+        "non_compete_overbroad",
+        "missing_mandatory_term",
+        "other"
+      ],
+      "title": "RiskType",
+      "type": "string"
+    }
+  },
+  "description": "合同图谱：ContractGraph",
+  "properties": {
+    "contract_id": {
+      "description": "内部合同ID",
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "0.1.0",
+      "description": "schema 版本号",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "raw_text": {
+      "description": "合同全文（或主体文本）",
+      "title": "Raw Text",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/ContractMeta"
+    },
+    "parties": {
+      "items": {
+        "$ref": "#/$defs/ContractParty"
+      },
+      "title": "Parties",
+      "type": "array"
+    },
+    "definitions": {
+      "items": {
+        "$ref": "#/$defs/ContractDefinition"
+      },
+      "title": "Definitions",
+      "type": "array"
+    },
+    "clauses": {
+      "items": {
+        "$ref": "#/$defs/ContractClause"
+      },
+      "title": "Clauses",
+      "type": "array"
+    },
+    "presence_summary": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ContractPresenceSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "合同要素覆盖情况（按合同类型的 PRESENCE_SCHEMAS 配置生成）"
+    },
+    "risks": {
+      "items": {
+        "$ref": "#/$defs/ContractRisk"
+      },
+      "title": "Risks",
+      "type": "array"
+    },
+    "attachments": {
+      "items": {
+        "$ref": "#/$defs/ContractAttachment"
+      },
+      "title": "Attachments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract_id",
+    "raw_text",
+    "meta"
+  ],
+  "title": "ContractGraph",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
