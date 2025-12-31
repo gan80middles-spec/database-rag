@@ -140,9 +140,9 @@ def build_system_prompt() -> str:
         "3) 如果某信息原文没有或无法确定：允许为 null/unknown/空字符串/空数组（遵循字段类型）。\n"
         "4) parties/definitions/clauses/risks/attachments 必须是数组（没有就 []）。\n"
         "5) clauses.id 必须唯一，且 risks.source_clause_ids 必须引用 clauses.id。\n"
-        "6) 输clauses[].text 不得粘贴原文；如 schema 必填，则只给 <=200 字“摘要/改写”，不要包含引号/表格/附件。\n"
+        "6) clauses[].text 不得粘贴原文；如 schema 必填，则只给 <=200 字“摘要/改写”，不要包含引号/表格/附件。\n"
         "7) clauses 数量上限（比如 200）；risks 数量上限（比如 80）。超出就只保留高风险/关键条款。\n"
-        "8) 不要输出任何大段原文（包括附件目录/签字页/表格），否则视为失败。" 
+        "8) 不要输出任何大段原文（包括附件目录/签字页/表格），否则视为失败。"
     )
 
 
@@ -187,6 +187,25 @@ def build_repair_prompt(validation_errors: List[Dict[str, Any]], last_args: Dict
         "\n"
         "[LAST_ARGS_COMPACT]\n"
         f"{json.dumps(compact, ensure_ascii=False)}\n"
+    )
+
+
+def build_json_repair_prompt(finish_reason: Optional[str], bad_args_path: Optional[str]) -> str:
+    info_lines = []
+    if finish_reason:
+        info_lines.append(f"- finish_reason: {finish_reason}")
+    if bad_args_path:
+        info_lines.append(f"- bad_args_path: {bad_args_path}")
+    info_text = "\n".join(info_lines) if info_lines else "(no extra info)"
+
+    return (
+        "上一次工具输出的 function.arguments 不是合法 JSON（可能被截断或格式错误）。\n"
+        "请重新输出完整且严格合法的 JSON（仅 tool_calls），不要输出普通文本。\n"
+        "强制要求：不要输出合同原文；clauses[].text 只给 <=200 字摘要/改写；"
+        "clauses<=200、risks<=80；字段类型必须符合 schema。\n"
+        "\n"
+        "[DEBUG]\n"
+        f"{info_text}\n"
     )
 
 
@@ -404,6 +423,34 @@ def normalize_to_contractgraph(
         if not isinstance(v, list):
             out[k] = []
 
+    seed = doc.get("seed_clauses") or []
+    seed_map = {
+        c.get("id"): c
+        for c in seed
+        if isinstance(c, dict) and isinstance(c.get("id"), str)
+    }
+
+    if seed_map:
+        for c in out.get("clauses", []):
+            if not isinstance(c, dict):
+                continue
+            cid = c.get("id")
+            if cid in seed_map and not c.get("text"):
+                seed_text = seed_map[cid].get("text")
+                if isinstance(seed_text, str):
+                    c["text"] = seed_text
+
+        if not out.get("clauses"):
+            ref_ids: set[str] = set()
+            for r in out.get("risks", []):
+                if not isinstance(r, dict):
+                    continue
+                for cid in r.get("source_clause_ids") or []:
+                    if isinstance(cid, str):
+                        ref_ids.add(cid)
+            if ref_ids:
+                out["clauses"] = [seed_map[cid] for cid in ref_ids if cid in seed_map]
+
     # ---- presence_summary (optional)
     if out.get("presence_summary") is None and presence_schemas:
         ct = out.get("meta", {}).get("contract_type", "other")
@@ -427,6 +474,22 @@ def strip_for_output(obj: Dict[str, Any], keep_raw_text: bool) -> Dict[str, Any]
     return x
 
 
+def write_bad_args(raw_args: Any, contract_id: str, attempt: int) -> Optional[str]:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", contract_id or "UNKNOWN")
+    bad_dir = Path("bad_args")
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    path = bad_dir / f"{safe_id}.{attempt}.txt"
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            if isinstance(raw_args, str):
+                f.write(raw_args)
+            else:
+                f.write(str(raw_args))
+        return str(path)
+    except OSError:
+        return None
+
+
 # -------------------------
 # DeepSeek call
 # -------------------------
@@ -438,8 +501,10 @@ def call_once(
     messages: List[Dict[str, Any]],
     max_tokens: int,
     temperature: float,
+    contract_id: str,
+    attempt: int,
     extra_body: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Optional[str], Optional[str]]:
     tools = [to_openai_tool(tool)]
     tool_choice = {"type": "function", "function": {"name": tool.name}}
 
@@ -457,6 +522,7 @@ def call_once(
         kwargs["extra_body"] = extra_body
 
     resp = client.chat.completions.create(**kwargs)
+    finish_reason = resp.choices[0].finish_reason
     msg = resp.choices[0].message
 
     if not getattr(msg, "tool_calls", None):
@@ -469,11 +535,23 @@ def call_once(
 
     args = fn.arguments
     if isinstance(args, str):
-        return json.loads(args)
+        try:
+            return json.loads(args), finish_reason, None
+        except json.JSONDecodeError as je:
+            bad_path = write_bad_args(args, contract_id, attempt)
+            setattr(je, "finish_reason", finish_reason)
+            setattr(je, "bad_args_path", bad_path)
+            raise
     if isinstance(args, dict):
-        return args
+        return args, finish_reason, None
     # 某些兼容层可能返回 None/其他类型
-    return json.loads(str(args))
+    try:
+        return json.loads(str(args)), finish_reason, None
+    except json.JSONDecodeError as je:
+        bad_path = write_bad_args(args, contract_id, attempt)
+        setattr(je, "finish_reason", finish_reason)
+        setattr(je, "bad_args_path", bad_path)
+        raise
 
 
 # -------------------------
@@ -497,6 +575,8 @@ def extract_one(
         "repairs_used": 0,
         "validation_ok": False,
         "validation_errors": None,
+        "finish_reason": None,
+        "raw_args_path": None,
     }
 
     messages = [
@@ -505,19 +585,41 @@ def extract_one(
     ]
 
     last_args: Optional[Dict[str, Any]] = None
+    cid = doc.get("contract_id") or doc.get("doc_id") or doc.get("_id") or "UNKNOWN"
+    cid = str(cid)
 
     for attempt in range(max_calls):
         debug_last["calls_used"] += 1
 
-        args_obj = call_once(
-            client=client,
-            model=model,
-            tool=tool,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            extra_body=extra_body,
-        )
+        try:
+            args_obj, finish_reason, raw_args_path = call_once(
+                client=client,
+                model=model,
+                tool=tool,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                contract_id=cid,
+                attempt=attempt + 1,
+                extra_body=extra_body,
+            )
+            debug_last["finish_reason"] = finish_reason
+            debug_last["raw_args_path"] = raw_args_path
+        except json.JSONDecodeError as je:
+            debug_last["finish_reason"] = getattr(je, "finish_reason", None)
+            debug_last["raw_args_path"] = getattr(je, "bad_args_path", None)
+            debug_last["validation_errors"] = [{"msg": str(je), "type": "json_decode_error"}]
+
+            repair = build_json_repair_prompt(
+                finish_reason=debug_last["finish_reason"],
+                bad_args_path=debug_last["raw_args_path"],
+            )
+            messages = [
+                {"role": "system", "content": build_system_prompt()},
+                {"role": "user", "content": repair},
+            ]
+            debug_last["repairs_used"] += 1
+            continue
         last_args = args_obj
 
         normalized = normalize_to_contractgraph(
