@@ -1,0 +1,121 @@
+{
+  "name": "extract_contract_graph_v1",
+  "description": "从合同原文抽取 ContractGraph（不输出 raw_text；presence_summary 由本地 PRESENCE_SCHEMAS 生成）。必须仅通过 tool_calls 返回参数 JSON。",
+  "schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["contract_id", "schema_version", "meta", "parties", "definitions", "clauses", "risks", "attachments"],
+    "properties": {
+      "contract_id": { "type": "string", "description": "内部合同ID" },
+      "schema_version": { "type": "string", "default": "0.1.0", "description": "schema 版本号" },
+
+      "meta": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["contract_type"],
+        "properties": {
+          "contract_type": {
+            "type": "string",
+            "description": "合同类型：buy_sell / labor / lease / nda / outsourcing / software / other"
+          }
+        }
+      },
+
+      "parties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "name", "role"],
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "role": { "type": "string", "description": "如 甲方/乙方/用人单位/劳动者 等" }
+          }
+        },
+        "default": []
+      },
+
+      "definitions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["term", "meaning"],
+          "properties": {
+            "term": { "type": "string" },
+            "meaning": { "type": "string" },
+            "source_clause_id": { "type": ["string", "null"], "default": null }
+          }
+        },
+        "default": []
+      },
+
+      "clauses": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "title", "text"],
+          "properties": {
+            "id": { "type": "string", "description": "条款ID（可用 C001_012 等）" },
+            "title": { "type": "string" },
+            "text": { "type": "string" },
+            "clause_no": { "type": ["string", "null"], "default": null },
+            "tags": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "default": []
+      },
+
+      "risks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "source_clause_ids", "risk_type", "severity", "description"],
+          "properties": {
+            "id": { "type": "string" },
+            "source_clause_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "risk_type": { "type": "string", "description": "风险类型枚举或 other" },
+            "severity": { "type": "string", "description": "risk_low / risk_medium / risk_high / other" },
+            "description": { "type": "string" },
+            "rule_id": { "type": ["string", "null"], "default": null },
+            "ref_laws": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["law_doc_id"],
+                "properties": {
+                  "law_doc_id": { "type": "string" },
+                  "law_name": { "type": ["string", "null"], "default": null },
+                  "article_no": { "type": ["string", "null"], "default": null },
+                  "article_range": { "type": ["string", "null"], "default": null }
+                }
+              },
+              "default": []
+            }
+          }
+        },
+        "default": []
+      },
+
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["id", "title", "related_clause_ids"],
+          "properties": {
+            "id": { "type": "string" },
+            "title": { "type": "string" },
+            "type": { "type": ["string", "null"], "default": null },
+            "related_clause_ids": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "default": []
+      }
+    }
+  }
+}
