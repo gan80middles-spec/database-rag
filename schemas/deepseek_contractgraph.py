@@ -147,7 +147,7 @@ def build_system_prompt() -> str:
 
 
 def build_user_prompt(doc: Dict[str, Any]) -> str:
-    contract_id = doc.get("contract_id") or doc.get("doc_id") or doc.get("_id") or "UNKNOWN"
+    contract_id = doc.get("doc_id") or doc.get("contract_id") or doc.get("_id") or "UNKNOWN"
     meta = doc.get("meta") or {}
     contract_type = (
         meta.get("contract_type")
@@ -396,8 +396,11 @@ def normalize_to_contractgraph(
     out = copy.deepcopy(args_obj) if isinstance(args_obj, dict) else {}
 
     # ---- contract_id
-    if not isinstance(out.get("contract_id"), str) or not out["contract_id"]:
-        cid = doc.get("contract_id") or doc.get("doc_id") or doc.get("_id")
+    doc_id = doc.get("doc_id")
+    if doc_id:
+        out["contract_id"] = str(doc_id)
+    elif not isinstance(out.get("contract_id"), str) or not out["contract_id"]:
+        cid = doc.get("contract_id") or doc.get("_id")
         out["contract_id"] = str(cid) if cid else "UNKNOWN"
 
     # ---- schema_version
@@ -415,6 +418,14 @@ def normalize_to_contractgraph(
     doc_meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
     if "contract_type" not in meta:
         meta["contract_type"] = doc_meta.get("contract_type") or doc.get("contract_type") or "other"
+    if isinstance(out.get("contract_id"), str):
+        base_contract_id = out["contract_id"].split("#", 1)[0]
+        if base_contract_id:
+            meta.setdefault("base_contract_id", base_contract_id)
+        if "#" in out["contract_id"]:
+            part = out["contract_id"].split("#", 1)[1]
+            if part:
+                meta.setdefault("part", part)
     out["meta"] = meta
 
     # ---- arrays
@@ -423,12 +434,40 @@ def normalize_to_contractgraph(
         if not isinstance(v, list):
             out[k] = []
 
+    party_type_map = {
+        "organization": "company",
+    }
+    for party in out.get("parties", []):
+        if not isinstance(party, dict):
+            continue
+        raw_type = party.get("type")
+        if isinstance(raw_type, str) and raw_type:
+            raw_normalized = raw_type.strip().lower()
+            normalized_type = party_type_map.get(raw_normalized, raw_normalized)
+        else:
+            normalized_type = "other"
+        if normalized_type not in {"natural_person", "company", "government", "other"}:
+            normalized_type = "other"
+        party["type"] = normalized_type
+
     seed = doc.get("seed_clauses") or []
     seed_map = {
         c.get("id"): c
         for c in seed
         if isinstance(c, dict) and isinstance(c.get("id"), str)
     }
+
+    if seed and not out.get("clauses"):
+        truncated_seed: List[Dict[str, Any]] = []
+        for clause in seed[:200]:
+            if not isinstance(clause, dict):
+                continue
+            clause_copy = copy.deepcopy(clause)
+            text = clause_copy.get("text")
+            if isinstance(text, str) and len(text) > 300:
+                clause_copy["text"] = text[:300] + "…"
+            truncated_seed.append(clause_copy)
+        out["clauses"] = truncated_seed
 
     if seed_map:
         for c in out.get("clauses", []):
@@ -585,7 +624,7 @@ def extract_one(
     ]
 
     last_args: Optional[Dict[str, Any]] = None
-    cid = doc.get("contract_id") or doc.get("doc_id") or doc.get("_id") or "UNKNOWN"
+    cid = doc.get("doc_id") or doc.get("contract_id") or doc.get("_id") or "UNKNOWN"
     cid = str(cid)
 
     for attempt in range(max_calls):
@@ -718,7 +757,7 @@ def main() -> None:
     pbar = tqdm(rows, desc="extract_contract_graph", total=len(rows))
 
     for doc in pbar:
-        cid = doc.get("contract_id") or doc.get("doc_id") or doc.get("_id")
+        cid = doc.get("doc_id") or doc.get("contract_id") or doc.get("_id")
         cid = str(cid) if cid else "UNKNOWN"
 
         if cid in done:

@@ -26,11 +26,16 @@
         "items": {
           "type": "object",
           "additionalProperties": true,
-          "required": ["id", "name", "role"],
+          "required": ["id", "name", "role", "type"],
           "properties": {
             "id": { "type": "string" },
             "name": { "type": "string" },
-            "role": { "type": "string", "description": "如 甲方/乙方/用人单位/劳动者 等" }
+            "role": { "type": "string", "description": "如 甲方/乙方/用人单位/劳动者 等" },
+            "type": {
+              "type": "string",
+              "enum": ["natural_person", "company", "government", "other"],
+              "description": "当事人类型"
+            }
           }
         },
         "default": []
